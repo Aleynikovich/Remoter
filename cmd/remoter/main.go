@@ -179,7 +179,7 @@ func keepUpdated(ctx context.Context, exe string, every time.Duration, restart c
 	client := &http.Client{Timeout: 5 * time.Minute}
 	c := &update.Checker{Current: update.Version, Asset: update.AssetName(), Client: client}
 	c.API = os.Getenv("REMOTER_UPDATE_API") // for trying updates against a test server
-	failed := "" // a release that did not install is not downloaded again
+	failed := ""                            // a release that did not install is not downloaded again
 	for {
 		rel, asset, err := c.Latest(ctx)
 		switch {
