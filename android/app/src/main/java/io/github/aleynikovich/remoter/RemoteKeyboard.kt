@@ -1,5 +1,6 @@
 package io.github.aleynikovich.remoter
 
+import android.view.InputDevice
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.View
@@ -152,7 +153,7 @@ class RemoteKeyboard(
         }
         val device = e.device
         if (device == null || device.isVirtual || e.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD) return false
-        if (!device.isFullKeyboard) {
+        if (device.keyboardType != InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
             // A mouse's back button arrives as BACK; swallow it rather than
             // leaving the session.
             return e.keyCode == KeyEvent.KEYCODE_BACK
