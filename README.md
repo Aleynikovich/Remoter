@@ -121,9 +121,39 @@ give it keyboard focus.
   `http://100.102.208.35:8080`, enable it and restart the browser. That also
   lets the clipboard work without waiting for a click.
 
+### Desktop viewer for Linux
+
+`remoter-viewer` is a native window instead of a browser tab: H.264 decoded
+by FFmpeg and drawn by the GPU without a browser in between, and the
+keyboard and mouse fully handed to the remote computer. Install it for your
+user (it lands in `~/.local/bin` with a menu entry, and updates itself):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aleynikovich/remoter/main/scripts/install-viewer.sh | sh
+```
+
+It needs SDL 2 and FFmpeg from the system (Arch: `pacman -S sdl2 ffmpeg`,
+Debian/Ubuntu: `apt install libsdl2-2.0-0 libavcodec-extra`). Start it from
+the menu, or as `remoter-viewer 100.102.208.35:8080` to connect straight away.
+It remembers the server and password.
+
+* While connected, every key goes to the remote computer, including your
+  desktop's own shortcuts (Super+Q, Alt+Tab, workspace binds): on Wayland
+  the viewer uses the keyboard-shortcuts-inhibit protocol, which Hyprland,
+  Sway, GNOME and KDE support, and the pointer is kept inside the window.
+  **Ctrl+Alt+Esc** gives keyboard and mouse back; click the picture to hand
+  them over again. In Hyprland, binds marked `bindp` still stay local.
+* **Ctrl+Alt+Enter** toggles full screen, **Ctrl+Alt+PageDown/PageUp**
+  switches between the remote computer's monitors.
+* The clipboard follows you both ways: copy on the remote computer and paste
+  locally, or copy locally and press Ctrl+V in the remote one.
+* `-jpeg` asks for JPEG tiles instead of video, `-fullscreen` starts full
+  screen, `-no-update` stops updates.
+
 ### Linux viewers with a tiling compositor (Hyprland, Sway...)
 
-The compositor sees key combinations before any browser does, so binds such
+The desktop viewer above handles this by itself. In a browser, the
+compositor sees key combinations before the page does, so binds such
 as Super+Q never reach the remote computer, even with Keyboard Lock. Add a
 passthrough mode that disables your binds while you work on the remote
 machine. For Hyprland, in `hyprland.conf`:
@@ -167,3 +197,5 @@ go test -race ./...
 | `internal/input` | applies mouse/keyboard on the host (Windows: SendInput) |
 | `internal/protocol` | wire messages |
 | `web/static` | browser viewer |
+| `cmd/remoter-viewer` | Linux desktop viewer (SDL 2 and FFmpeg loaded at run time) |
+| `internal/viewer` | desktop viewer connection, key map and settings |

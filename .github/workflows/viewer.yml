@@ -1,0 +1,41 @@
+name: Viewer
+# Publishes the Linux desktop viewer. Pushes get their own numbered
+# viewer-dev prerelease, so viewer builds never carry host binaries and a
+# test PC's host does not reinstall itself for viewer-only work. Viewers
+# install the newest release that has their asset, hosts the newest that
+# has theirs.
+on:
+  push:
+    tags: ["v*"]
+    branches: [main, "claude/**"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          # SDL and FFmpeg are loaded at run time, so no cgo is needed.
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('viewer-dev-{0}', github.run_number) }}
+        run: |
+          mkdir dist
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X github.com/aleynikovich/remoter/internal/update.Version=$VERSION" \
+              -o "dist/remoter-viewer-linux-$arch" ./cmd/remoter-viewer
+          done
+          cp scripts/install-viewer.sh dist/
+          ls -l dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('viewer-dev-{0}', github.run_number) }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Linux viewer {0} ({1})', github.run_number, github.ref_name) }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ github.ref_type != 'tag' || contains(github.ref_name, '-') }}
