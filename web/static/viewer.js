@@ -42,6 +42,7 @@ function connect(id, password) {
       session = { id, password, retryUntil: 0 };
       $("notice").textContent = "";
       $("session-label").textContent = `Connected to ${msg.id}`;
+      checkBuild();
       $("connect-view").hidden = true;
       $("session-view").hidden = false;
       ws.send(JSON.stringify({ type: "refresh" }));
@@ -66,6 +67,22 @@ function connect(id, password) {
     $("connect-view").hidden = false;
     setStatus(lastError || (connected ? "Session ended." : "Could not reach the server."));
   };
+}
+
+// checkBuild shows the build the server runs, and says so when it changed
+// since the last connection (the computer updated itself).
+let build = "";
+async function checkBuild() {
+  try {
+    const res = await fetch("/version", { cache: "no-store" });
+    if (!res.ok) return;
+    const now = (await res.text()).trim();
+    if (build && now !== build) notice(`Updated to ${now}`, 8000);
+    build = now;
+    $("build").textContent = now;
+  } catch (err) {
+    console.error(err);
+  }
 }
 
 // retry schedules another attempt to reopen the current session, keeping the

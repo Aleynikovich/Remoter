@@ -79,8 +79,11 @@ func main() {
 	done := make(chan struct{})
 	var srv *http.Server
 	if runServer {
-		srv, err = startServer(*addr)
-		if err != nil {
+		srv, err = startServer(ctx, *addr)
+		if ctx.Err() != nil && !errors.Is(context.Cause(ctx), errRestart) {
+			return
+		}
+		if err != nil && ctx.Err() == nil {
 			log.Fatal(err)
 		}
 	}
@@ -122,27 +125,45 @@ func version() string {
 	return update.Version
 }
 
-// startServer serves the relay and web viewer. Right after an update the
-// previous process may still be letting go of the port, so it retries.
-func startServer(addr string) (*http.Server, error) {
+// startServer serves the relay and web viewer.
+func startServer(ctx context.Context, addr string) (*http.Server, error) {
 	static, err := fs.Sub(web.Files, "static")
 	if err != nil {
 		return nil, err
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/ws/", relay.New().Handler())
+	// The viewer shows which build is running and notices when it changes.
+	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		fmt.Fprint(w, version())
+	})
 	mux.Handle("/", http.FileServerFS(static))
 
+	// If the port is taken, by the previous process right after an update or
+	// by an older Remoter still running, wait for it. That lets a new copy be
+	// started first and take over the moment the old one is closed, without
+	// ever leaving the computer unreachable.
 	var ln net.Listener
-	for try := 0; ; try++ {
+	start := time.Now()
+	waiting := false
+	for {
 		ln, err = net.Listen("tcp", addr)
-		if err == nil || try == 20 {
+		if err == nil {
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		if !waiting && time.Since(start) > 3*time.Second {
+			log.Printf("port %s is in use (%v); waiting for it, close the other Remoter or server to take over", portOf(addr), err)
+			waiting = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
-	if err != nil {
-		return nil, err
+	if waiting {
+		log.Print("took over the port")
 	}
 	srv := &http.Server{Handler: mux}
 	go func() {
@@ -179,7 +200,9 @@ func keepUpdated(ctx context.Context, exe string, every time.Duration, restart c
 	client := &http.Client{Timeout: 5 * time.Minute}
 	c := &update.Checker{Current: update.Version, Asset: update.AssetName(), Client: client}
 	c.API = os.Getenv("REMOTER_UPDATE_API") // for trying updates against a test server
-	failed := ""                            // a release that did not install is not downloaded again
+	// A release that did not install is not downloaded again.
+	failed := ""
+	saidCurrent := false
 	for {
 		rel, asset, err := c.Latest(ctx)
 		switch {
@@ -187,6 +210,10 @@ func keepUpdated(ctx context.Context, exe string, every time.Duration, restart c
 			if ctx.Err() == nil {
 				log.Printf("update check failed: %v", err)
 			}
+		case rel == nil && !saidCurrent:
+			// Said once, so the window shows that checking works.
+			log.Printf("%s is the newest build, checking for updates every %v", update.Version, every)
+			saidCurrent = true
 		case rel != nil && rel.Tag != failed:
 			log.Printf("downloading %s", rel.Tag)
 			if err := update.Install(ctx, client, exe, asset, rel.Tag); err != nil {
