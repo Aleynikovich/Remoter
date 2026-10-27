@@ -290,11 +290,32 @@ func TestCursorAndDisplaySwitching(t *testing.T) {
 	c, _ := dialViewer(t, base, id, "secret")
 	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
 
-	if m := readText(t, c, protocol.TypeDisplays); m.Count != 2 || m.Display != 0 {
-		t.Fatalf("got %+v, want 2 displays showing the first", m)
+	// The display list (sent on join) and the cursor (sent with the first
+	// update) can arrive in either order.
+	var displays, cursor *protocol.Message
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for displays == nil || cursor == nil {
+		mt, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("displays %v, cursor %v: %v", displays, cursor, err)
+		}
+		var m protocol.Message
+		if mt != websocket.MessageText || json.Unmarshal(data, &m) != nil {
+			continue
+		}
+		switch m.Type {
+		case protocol.TypeDisplays:
+			displays = &m
+		case protocol.TypeCursor:
+			cursor = &m
+		}
 	}
-	if m := readText(t, c, protocol.TypeCursor); m.Cursor != "text" {
-		t.Fatalf("got cursor %q, want text", m.Cursor)
+	if displays.Count != 2 || displays.Display != 0 {
+		t.Fatalf("got %+v, want 2 displays showing the first", displays)
+	}
+	if cursor.Cursor != "text" {
+		t.Fatalf("got cursor %q, want text", cursor.Cursor)
 	}
 
 	sendJSON(t, c, protocol.Message{Type: protocol.TypeSelectDisplay, Display: 1})
