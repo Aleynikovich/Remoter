@@ -16,6 +16,9 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./...
+      # Shows whether the real OpenH264 codec loaded and encoded (it skips
+      # when the library is unavailable).
+      - run: go test -v -run TestEncode ./internal/h264
       - if: runner.os == 'Linux'
         run: go test -race ./...
       - if: runner.os == 'Windows'
