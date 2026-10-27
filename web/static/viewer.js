@@ -57,6 +57,8 @@ function connect(id, password) {
       canvas.focus();
     } else if (msg.type === "cursor") {
       canvas.style.cursor = msg.cursor;
+    } else if (msg.type === "video") {
+      stats.hostWhy = msg.text || "";
     } else if (msg.type === "displays") {
       showDisplays(msg.count || 1, msg.display || 0);
     } else if (msg.type === "clipboard") {
@@ -151,6 +153,15 @@ const videoSupported = (async () => {
   }
 })();
 
+// Why this browser cannot decode the video, or "" when it can.
+let browserWhy = "";
+videoSupported.then((ok) => {
+  if (ok) return;
+  browserWhy = !window.isSecureContext
+    ? `this page is not trusted for video: add ${location.origin} to the browser's "Insecure origins treated as secure" flag and restart it`
+    : "this browser cannot decode H.264";
+});
+
 function videoStream(sock) {
   let decoder = null;
   let codec = "";
@@ -221,10 +232,16 @@ function codecFromSPS(data) {
 }
 
 // Frame rate and bandwidth, shown next to the session label.
-const stats = { frames: 0, bytes: 0, mode: "" };
+// On JPEG the reason video is off is shown too, in full on hover.
+const stats = { frames: 0, bytes: 0, mode: "", hostWhy: "" };
 setInterval(() => {
   if (!ws) return;
-  $("stats").textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbit/s · ${stats.mode}`;
+  let mode = stats.mode;
+  let why = "";
+  if (mode === "JPEG") why = browserWhy || stats.hostWhy;
+  if (why) mode += ` (no H.264: ${why.length > 60 ? why.slice(0, 57) + "…" : why})`;
+  $("stats").textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbit/s · ${mode}`;
+  $("stats").title = why ? `Sending JPEG because ${why}` : "";
   stats.frames = 0;
   stats.bytes = 0;
 }, 1000);

@@ -164,12 +164,16 @@ func readUpdate(t *testing.T, c *websocket.Conn) *stream.Update {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typ, data, err := c.Read(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if typ != websocket.MessageBinary {
-		t.Fatalf("got message type %v, want binary update", typ)
+	var data []byte
+	for {
+		typ, d, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ == websocket.MessageBinary {
+			data = d
+			break
+		}
 	}
 	u, err := stream.Parse(data)
 	if err != nil {
@@ -372,6 +376,16 @@ func TestVideoOnlyForViewersThatDecodeIt(t *testing.T) {
 			t.Fatalf("got %+v, %v; want a full JPEG update", u, err)
 		}
 		break
+	}
+
+	// Viewers are told why video went off. The first viewer may still have
+	// the status from its own refresh, which said video was on, queued.
+	m := readText(t, c, protocol.TypeVideo)
+	if m.Text == "" {
+		m = readText(t, c, protocol.TypeVideo)
+	}
+	if !strings.Contains(m.Text, "cannot decode H.264") {
+		t.Fatalf("video status %q, want why it is off", m.Text)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 
 func TestLatest(t *testing.T) {
 	releases := []Release{
+		{Tag: "dev-2", Assets: []Asset{{Name: "remoter.exe", URL: "u2"}}},         // GitHub lists some old ones first
 		{Tag: "dev-9", Assets: []Asset{{Name: "remoter-host-windows-amd64.exe"}}}, // old layout
 		{Tag: "dev-8", Draft: true, Assets: []Asset{{Name: "remoter.exe"}}},
 		{Tag: "dev-7", Assets: []Asset{{Name: "remoter.exe", URL: "u7"}}},
