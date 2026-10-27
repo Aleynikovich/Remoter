@@ -1,0 +1,33 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir dist
+          for target in windows/amd64 linux/amd64; do
+            os=${target%/*}; arch=${target#*/}
+            ext=""; [ "$os" = windows ] && ext=".exe"
+            for cmd in remoter-server remoter-host; do
+              GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" \
+                -o "dist/${cmd}-${os}-${arch}${ext}" ./cmd/$cmd
+            done
+          done
+          ls -l dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
