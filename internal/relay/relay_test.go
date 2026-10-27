@@ -1,0 +1,147 @@
+package relay_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"image/jpeg"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"github.com/aleynikovich/remoter/internal/capture"
+	"github.com/aleynikovich/remoter/internal/host"
+	"github.com/aleynikovich/remoter/internal/protocol"
+	"github.com/aleynikovich/remoter/internal/relay"
+)
+
+type inputRecorder chan protocol.Input
+
+func (r inputRecorder) HandleInput(_ string, in protocol.Input) { r <- in }
+
+// startHost runs a relay and a host agent and returns the relay's ws URL and
+// the host's session ID.
+func startHost(t *testing.T, password string, input host.InputHandler) (string, string) {
+	t.Helper()
+	srv := httptest.NewServer(relay.New().Handler())
+	t.Cleanup(srv.Close)
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ids := make(chan string, 1)
+	a := &host.Agent{
+		ServerURL:    base + "/ws/host",
+		Password:     password,
+		Source:       capture.TestPattern{Width: 64, Height: 48},
+		Input:        input,
+		FPS:          30,
+		OnRegistered: func(id string) { ids <- id },
+	}
+	go a.Run(ctx)
+	select {
+	case id := <-ids:
+		return base, id
+	case <-time.After(5 * time.Second):
+		t.Fatal("host did not register")
+		return "", ""
+	}
+}
+
+func dialViewer(t *testing.T, base, id, password string) (*websocket.Conn, protocol.Message) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, base+"/ws/viewer", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.CloseNow() })
+	c.SetReadLimit(16 << 20)
+	req, _ := json.Marshal(protocol.Message{Type: protocol.TypeConnect, ID: id, Password: password})
+	if err := c.Write(ctx, websocket.MessageText, req); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m protocol.Message
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	return c, m
+}
+
+func TestViewerReceivesFramesAndSendsInput(t *testing.T) {
+	inputs := make(inputRecorder, 1)
+	base, id := startHost(t, "secret", inputs)
+	if len(id) != 9 {
+		t.Fatalf("id %q is not 9 digits", id)
+	}
+
+	c, m := dialViewer(t, base, id, "secret")
+	if m.Type != protocol.TypeConnected {
+		t.Fatalf("got %+v, want connected", m)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	typ, frame, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ != websocket.MessageBinary {
+		t.Fatalf("got message type %v, want binary frame", typ)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(frame))
+	if err != nil {
+		t.Fatalf("frame is not a JPEG: %v", err)
+	}
+	if b := img.Bounds(); b.Dx() != 64 || b.Dy() != 48 {
+		t.Fatalf("frame size %v, want 64x48", b)
+	}
+
+	msg, _ := json.Marshal(protocol.Message{Type: protocol.TypeInput, Input: &protocol.Input{Kind: "mousedown", X: 0.5, Y: 0.25}})
+	if err := c.Write(ctx, websocket.MessageText, msg); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case in := <-inputs:
+		if in.Kind != "mousedown" || in.X != 0.5 || in.Y != 0.25 {
+			t.Fatalf("host got %+v", in)
+		}
+	case <-ctx.Done():
+		t.Fatal("host did not receive input")
+	}
+}
+
+func TestWrongPasswordIsRejected(t *testing.T) {
+	base, id := startHost(t, "secret", nil)
+	_, m := dialViewer(t, base, id, "nope")
+	if m.Type != protocol.TypeError || m.Error != "wrong password" {
+		t.Fatalf("got %+v, want wrong password error", m)
+	}
+}
+
+func TestUnknownID(t *testing.T) {
+	base, _ := startHost(t, "secret", nil)
+	_, m := dialViewer(t, base, "000000000", "secret")
+	if m.Type != protocol.TypeError {
+		t.Fatalf("got %+v, want error", m)
+	}
+}
+
+func TestLockoutAfterRepeatedFailures(t *testing.T) {
+	base, id := startHost(t, "secret", nil)
+	for range 5 {
+		dialViewer(t, base, id, "nope")
+	}
+	_, m := dialViewer(t, base, id, "secret")
+	if m.Type != protocol.TypeError || !strings.Contains(m.Error, "too many") {
+		t.Fatalf("got %+v, want lockout", m)
+	}
+}

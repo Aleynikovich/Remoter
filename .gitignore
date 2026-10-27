@@ -1,0 +1,4 @@
+/remoter-server
+/remoter-host
+*.exe
+dist/
