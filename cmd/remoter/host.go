@@ -19,6 +19,7 @@ import (
 	"github.com/aleynikovich/remoter/internal/h264"
 	"github.com/aleynikovich/remoter/internal/host"
 	"github.com/aleynikovich/remoter/internal/input"
+	"github.com/aleynikovich/remoter/internal/update"
 )
 
 type hostOptions struct {
@@ -113,7 +114,9 @@ func prepareVideo() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, exe, "-h264-selftest").CombinedOutput()
+	cmd := exec.CommandContext(ctx, exe, "-h264-selftest")
+	update.HideWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		first, _, _ := bytes.Cut(bytes.TrimSpace(out), []byte("\n"))
 		return fmt.Errorf("codec self-test failed: %v: %s", err, first)

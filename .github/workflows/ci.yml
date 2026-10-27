@@ -16,5 +16,20 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./...
+      # Shows whether the real OpenH264 codec loaded and encoded (it skips
+      # when the library is unavailable).
+      - run: go test -v -run TestEncode ./internal/h264
       - if: runner.os == 'Linux'
         run: go test -race ./...
+      - if: runner.os == 'Windows'
+        name: Background launch smoke test
+        shell: pwsh
+        run: |
+          go build -o remoter.exe ./cmd/remoter
+          "" | ./remoter.exe -test-pattern -addr :18080
+          (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18080/version).Content
+          "" | ./remoter.exe -test-pattern -addr :18080 | Select-String "already running"
+          if (-not $?) { exit 1 }
+          ./remoter.exe -stop -addr :18080
+          Start-Sleep 1
+          try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18080/version; exit 1 } catch { "stopped" }

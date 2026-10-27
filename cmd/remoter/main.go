@@ -44,6 +44,10 @@ func main() {
 	noUpdate := flag.Bool("no-update", false, "do not update automatically")
 	checkEvery := flag.Duration("update-interval", 2*time.Minute, "how often to look for a new version")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	console := flag.Bool("console", false, "Windows: run in this window instead of in the background")
+	background := flag.Bool("background", false, "run without a window (what starting Remoter normally does on Windows)")
+	stopFlag := flag.Bool("stop", false, "stop the Remoter running on this computer")
+	noAutostart := flag.Bool("no-autostart", false, "Windows: do not start Remoter when you log in")
 	selfTest := flag.Bool("h264-selftest", false, "check that the H.264 codec works, then exit (used internally)")
 	flag.Parse()
 
@@ -71,6 +75,34 @@ func main() {
 			ho.server = "ws://" + localAddr(*addr) + "/ws/host"
 		}
 	}
+	if *stopFlag {
+		err := stopRunning(*addr)
+		if err == nil && backgroundSupported && *noAutostart {
+			if exe, xerr := update.Executable(); xerr == nil {
+				err = setAutostart(false, exe, nil)
+			}
+		}
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		fmt.Println("Remoter stopped.")
+		return
+	}
+	// The flags the user chose, kept for restarts and for starting at login.
+	userArgs := withoutFlags(os.Args[1:], "background", "console")
+	if backgroundSupported && !*console && !*background {
+		if launch(*addr, runServer, ho.password, userArgs) {
+			return
+		}
+		fmt.Println("Running in this window instead.")
+		*console = true
+	}
+	if *background {
+		if f, err := openLog(); err == nil {
+			log.SetOutput(f)
+		}
+	}
 	log.Printf("Remoter %s", version())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -86,11 +118,16 @@ func main() {
 		go update.Cleanup(exe)
 		go keepUpdated(ctx, exe, *checkEvery, restart)
 	}
+	if *background && exe != "" && update.Version != "" {
+		if err := setAutostart(!*noAutostart, exe, userArgs); err != nil {
+			log.Printf("could not set up starting at login: %v", err)
+		}
+	}
 
 	done := make(chan struct{})
 	var srv *http.Server
 	if runServer {
-		srv, err = startServer(ctx, *addr)
+		srv, err = startServer(ctx, *addr, func() { restart(errStop) })
 		if ctx.Err() != nil && !errors.Is(context.Cause(ctx), errRestart) {
 			return
 		}
@@ -124,10 +161,21 @@ func main() {
 		env = append(env, idEnv+"="+agentID())
 	}
 	log.Print("restarting into the new version")
-	log.Fatalf("restart failed, start Remoter again by hand: %v", update.Restart(exe, env))
+	if backgroundSupported && !*console {
+		err = startDetached(exe, append(userArgs, "-background"), env)
+		if err == nil {
+			os.Exit(0)
+		}
+	} else {
+		err = update.Restart(exe, env)
+	}
+	log.Fatalf("restart failed, start Remoter again by hand: %v", err)
 }
 
-var errRestart = errors.New("restart for update")
+var (
+	errRestart = errors.New("restart for update")
+	errStop    = errors.New("stopped by another Remoter")
+)
 
 func version() string {
 	if update.Version == "" {
@@ -137,7 +185,7 @@ func version() string {
 }
 
 // startServer serves the relay and web viewer.
-func startServer(ctx context.Context, addr string) (*http.Server, error) {
+func startServer(ctx context.Context, addr string, stop func()) (*http.Server, error) {
 	static, err := fs.Sub(web.Files, "static")
 	if err != nil {
 		return nil, err
@@ -149,6 +197,7 @@ func startServer(ctx context.Context, addr string) (*http.Server, error) {
 		w.Header().Set("Cache-Control", "no-store")
 		fmt.Fprint(w, version())
 	})
+	mux.Handle("/shutdown", shutdownHandler(stop))
 	mux.Handle("/", http.FileServerFS(static))
 
 	// If the port is taken, by the previous process right after an update or
