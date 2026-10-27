@@ -40,8 +40,17 @@
     </select>
     <button id="scale" class="secondary" title="Switch between fit to window and actual size">1:1</button>
     <button id="fullscreen" class="secondary">Full screen</button>
+    <button id="diag" class="secondary" title="Collect logs and timings from both ends">Diagnostics</button>
     <button id="disconnect">Disconnect</button>
   </header>
+  <dialog id="diag-dialog">
+    <p>Diagnostics from this viewer and the remote computer. Copy them and paste them into the chat.</p>
+    <textarea id="diag-text" readonly rows="20" cols="100"></textarea>
+    <div class="diag-buttons">
+      <button id="diag-copy">Copy</button>
+      <button id="diag-close" class="secondary">Close</button>
+    </div>
+  </dialog>
   <div id="screen-wrap"><canvas id="screen" tabindex="0"></canvas></div>
 </div>
 <script src="viewer.js"></script>

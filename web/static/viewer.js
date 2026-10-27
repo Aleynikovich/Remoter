@@ -57,6 +57,8 @@ function connect(id, password) {
       canvas.focus();
     } else if (msg.type === "cursor") {
       canvas.style.cursor = msg.cursor;
+    } else if (msg.type === "diagnostics") {
+      showDiagnostics(msg.text || "");
     } else if (msg.type === "video") {
       stats.hostWhy = msg.text || "";
     } else if (msg.type === "displays") {
@@ -165,6 +167,7 @@ videoSupported.then((ok) => {
 function videoStream(sock) {
   let decoder = null;
   let codec = "";
+  const pushed = new Map(); // seq -> when it arrived, to time decoding
   const ack = (seq) => {
     if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "ack", seq }));
   };
@@ -183,6 +186,12 @@ function videoStream(sock) {
           applyScale();
         }
         ctx2d.drawImage(frame, 0, 0);
+        const t = pushed.get(frame.timestamp);
+        if (t !== undefined) {
+          pushed.delete(frame.timestamp);
+          stats.decodeMs += performance.now() - t;
+          stats.decoded++;
+        }
         ack(frame.timestamp);
         frame.close();
         stats.frames++;
@@ -214,6 +223,9 @@ function videoStream(sock) {
         ack(seq); // nothing to draw it with yet; keep the host moving
         return;
       }
+      if (pushed.size > 100) pushed.clear();
+      pushed.set(seq, performance.now());
+      stats.queue = Math.max(stats.queue, decoder.decodeQueueSize);
       decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: seq, data }));
     },
   };
@@ -233,7 +245,7 @@ function codecFromSPS(data) {
 
 // Frame rate and bandwidth, shown next to the session label.
 // On JPEG the reason video is off is shown too, in full on hover.
-const stats = { frames: 0, bytes: 0, mode: "", hostWhy: "" };
+const stats = { frames: 0, bytes: 0, mode: "", hostWhy: "", decodeMs: 0, decoded: 0, queue: 0, history: [] };
 setInterval(() => {
   if (!ws) return;
   let mode = stats.mode;
@@ -242,6 +254,10 @@ setInterval(() => {
   if (why) mode += ` (no H.264: ${why.length > 60 ? why.slice(0, 57) + "…" : why})`;
   $("stats").textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbit/s · ${mode}`;
   $("stats").title = why ? `Sending JPEG because ${why}` : "";
+  const decode = stats.decoded ? ` · decode ${(stats.decodeMs / stats.decoded).toFixed(1)} ms · queue ${stats.queue}` : "";
+  stats.history.push(`${new Date().toISOString().slice(11, 19)} ${$("stats").textContent}${decode}`);
+  if (stats.history.length > 60) stats.history.shift();
+  stats.decodeMs = stats.decoded = stats.queue = 0;
   stats.frames = 0;
   stats.bytes = 0;
 }, 1000);
@@ -309,7 +325,7 @@ window.addEventListener("blur", releaseHeld);
 // the toolbar's own menus keep their keys.
 function forRemote(e) {
   const t = e.target;
-  return ws && !$("session-view").hidden && !(t.closest && t.closest("header select, input"));
+  return ws && !$("session-view").hidden && !$("diag-dialog").open && !(t.closest && t.closest("header select, input"));
 }
 
 window.addEventListener("keydown", (e) => {
@@ -444,3 +460,35 @@ function notice(text, ms = 2000) {
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => { $("notice").textContent = ""; }, ms);
 }
+
+// Diagnostics: this viewer's details and last minute of stats, followed by
+// what the host sends back (its settings and recent log).
+let diagLocal = "";
+$("diag").addEventListener("click", async () => {
+  const v = await videoSupported;
+  diagLocal = [
+    `viewer: ${navigator.userAgent}`,
+    `page: ${location.origin}, secure context ${window.isSecureContext}, H.264 decode ${v}${browserWhy ? ` (${browserWhy})` : ""}`,
+    `screen: canvas ${canvas.width}x${canvas.height}, window ${innerWidth}x${innerHeight} @${devicePixelRatio}x, ${actualSize ? "1:1" : "fit"}`,
+    "--- last minute in this viewer ---",
+    ...stats.history,
+  ].join("\n");
+  showDiagnostics(null);
+  $("diag-dialog").showModal();
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "diagnostics" }));
+});
+
+function showDiagnostics(host) {
+  const d = $("diag-dialog");
+  if (host !== null && !d.open) return; // another viewer asked
+  $("diag-text").value = `${diagLocal}\n\n--- remote computer ---\n${host ?? "(waiting for the remote computer…)"}`;
+}
+
+$("diag-copy").addEventListener("click", () => {
+  const t = $("diag-text");
+  t.select();
+  document.execCommand("copy");
+  $("diag-copy").textContent = "Copied";
+  setTimeout(() => { $("diag-copy").textContent = "Copy"; }, 1500);
+});
+$("diag-close").addEventListener("click", () => $("diag-dialog").close());

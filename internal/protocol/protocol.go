@@ -44,6 +44,9 @@ const (
 	// host -> server -> every viewer: why the host sends JPEG instead of
 	// H.264 video, in Text; empty when it can send video.
 	TypeVideo = "video"
+	// viewer -> server -> host: send diagnostics. host -> server -> every
+	// viewer: the host's diagnostics (settings, recent log) in Text.
+	TypeDiagnostics = "diagnostics"
 	// viewer -> server -> host: show Display instead.
 	TypeSelectDisplay = "select_display"
 	// server -> host: a viewer went away.
@@ -74,7 +77,7 @@ type Message struct {
 // type on to the host.
 func FromViewer(typ string) bool {
 	switch typ {
-	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay:
+	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics:
 		return true
 	}
 	return false
@@ -84,7 +87,7 @@ func FromViewer(typ string) bool {
 // type on to every viewer.
 func ToViewers(typ string) bool {
 	switch typ {
-	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo:
+	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics:
 		return true
 	}
 	return false

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/aleynikovich/remoter/internal/diag"
 	"github.com/aleynikovich/remoter/internal/h264"
 	"github.com/aleynikovich/remoter/internal/relay"
 	"github.com/aleynikovich/remoter/internal/update"
@@ -98,11 +100,14 @@ func main() {
 		fmt.Println("Running in this window instead.")
 		*console = true
 	}
+	var logTo io.Writer = os.Stderr
 	if *background {
 		if f, err := openLog(); err == nil {
-			log.SetOutput(f)
+			logTo = f
 		}
 	}
+	// Viewers can ask for the recent log, so nobody has to dig for the file.
+	log.SetOutput(io.MultiWriter(logTo, diag.Log))
 	log.Printf("Remoter %s", version())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

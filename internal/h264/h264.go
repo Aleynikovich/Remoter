@@ -232,32 +232,31 @@ func toI420(dst []byte, img *image.RGBA, w, h int) {
 		go func(y0, y1 int) {
 			defer wg.Done()
 			for y := y0; y < y1; y += 2 {
-				r0 := img.Pix[y*img.Stride:]
-				r1 := img.Pix[(y+1)*img.Stride:]
-				for x := 0; x < w; x += 2 {
-					var sr, sg, sb int32
-					for _, px := range [4][]byte{r0[x*4:], r0[x*4+4:], r1[x*4:], r1[x*4+4:]} {
-						r, g, b := int32(px[0]), int32(px[1]), int32(px[2])
-						sr, sg, sb = sr+r, sg+g, sb+b
-						_ = px[3]
-					}
-					yp[y*w+x] = luma(r0[x*4:])
-					yp[y*w+x+1] = luma(r0[x*4+4:])
-					yp[(y+1)*w+x] = luma(r1[x*4:])
-					yp[(y+1)*w+x+1] = luma(r1[x*4+4:])
-					sr, sg, sb = sr/4, sg/4, sb/4
-					c := y/2*(w/2) + x/2
-					up[c] = uint8((-38*sr-74*sg+112*sb+128)>>8 + 128)
-					vp[c] = uint8((112*sr-94*sg-18*sb+128)>>8 + 128)
+				r0 := img.Pix[y*img.Stride : y*img.Stride+w*4]
+				r1 := img.Pix[(y+1)*img.Stride : (y+1)*img.Stride+w*4]
+				y0row := yp[y*w : y*w+w]
+				y1row := yp[(y+1)*w : (y+1)*w+w]
+				c := y / 2 * (w / 2)
+				ur, vr := up[c:c+w/2], vp[c:c+w/2]
+				for x := 0; x+1 < w; x += 2 {
+					i := x * 4
+					a, b := r0[i:i+8:i+8], r1[i:i+8:i+8]
+					ra, ga, ba := int32(a[0]), int32(a[1]), int32(a[2])
+					rb, gb, bb := int32(a[4]), int32(a[5]), int32(a[6])
+					rc, gc, bc := int32(b[0]), int32(b[1]), int32(b[2])
+					rd, gd, bd := int32(b[4]), int32(b[5]), int32(b[6])
+					y0row[x] = uint8((66*ra+129*ga+25*ba+128)>>8 + 16)
+					y0row[x+1] = uint8((66*rb+129*gb+25*bb+128)>>8 + 16)
+					y1row[x] = uint8((66*rc+129*gc+25*bc+128)>>8 + 16)
+					y1row[x+1] = uint8((66*rd+129*gd+25*bd+128)>>8 + 16)
+					sr, sg, sb := (ra+rb+rc+rd)>>2, (ga+gb+gc+gd)>>2, (ba+bb+bc+bd)>>2
+					ur[x/2] = uint8((-38*sr-74*sg+112*sb+128)>>8 + 128)
+					vr[x/2] = uint8((112*sr-94*sg-18*sb+128)>>8 + 128)
 				}
 			}
 		}(y0, min(y0+rowsPer, h))
 	}
 	wg.Wait()
-}
-
-func luma(px []byte) uint8 {
-	return uint8((66*int32(px[0])+129*int32(px[1])+25*int32(px[2])+128)>>8 + 16)
 }
 
 // SelfTest encodes a few small frames and checks the output looks like

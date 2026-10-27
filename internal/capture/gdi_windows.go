@@ -5,6 +5,8 @@ package capture
 import (
 	"errors"
 	"image"
+	"runtime"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -58,7 +60,8 @@ type gdi struct {
 	bitmap   uintptr
 	old      uintptr
 	bits     unsafe.Pointer
-	img      *image.RGBA
+	imgs     [2]*image.RGBA // returned in turn, see Source
+	turn     int
 }
 
 func newNative(display int) nativeSource {
@@ -97,13 +100,18 @@ func (g *gdi) Capture() (image.Image, error) {
 	}
 	procGdiFlush.Call()
 
-	// BGRX -> RGBA, four bytes at a time.
+	// BGRX -> RGBA, four bytes at a time, on every core.
+	g.turn ^= 1
+	img := g.imgs[g.turn]
 	src := unsafe.Slice((*uint32)(g.bits), w*h)
-	dst := unsafe.Slice((*uint32)(unsafe.Pointer(&g.img.Pix[0])), w*h)
-	for i, v := range src {
-		dst[i] = 0xFF000000 | v&0x0000FF00 | (v&0xFF)<<16 | (v>>16)&0xFF
-	}
-	return g.img, nil
+	dst := unsafe.Slice((*uint32)(unsafe.Pointer(&img.Pix[0])), w*h)
+	parallelRows(h, func(y0, y1 int) {
+		for i := y0 * w; i < y1*w; i++ {
+			v := src[i]
+			dst[i] = 0xFF000000 | v&0x0000FF00 | (v&0xFF)<<16 | (v>>16)&0xFF
+		}
+	})
+	return img, nil
 }
 
 func (g *gdi) setup() error {
@@ -131,7 +139,7 @@ func (g *gdi) setup() error {
 		return errors.New("CreateDIBSection failed")
 	}
 	g.old, _, _ = procSelectObject.Call(g.memDC, g.bitmap)
-	g.img = image.NewRGBA(g.bounds)
+	g.imgs = [2]*image.RGBA{image.NewRGBA(g.bounds), image.NewRGBA(g.bounds)}
 	return nil
 }
 
@@ -151,4 +159,19 @@ func (g *gdi) release() {
 		procReleaseDC.Call(0, g.screenDC)
 	}
 	g.memDC, g.bitmap, g.old, g.screenDC, g.bits = 0, 0, 0, 0, nil
+}
+
+// parallelRows splits rows 0..h into one band per core and runs fn on each.
+func parallelRows(h int, fn func(y0, y1 int)) {
+	n := min(runtime.GOMAXPROCS(0), 8)
+	per := (h + n - 1) / n
+	var wg sync.WaitGroup
+	for y := 0; y < h; y += per {
+		wg.Add(1)
+		go func(y0, y1 int) {
+			defer wg.Done()
+			fn(y0, y1)
+		}(y, min(y+per, h))
+	}
+	wg.Wait()
 }
