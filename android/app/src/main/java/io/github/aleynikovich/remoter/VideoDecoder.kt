@@ -14,10 +14,13 @@ import java.nio.ByteBuffer
  * Decodes the host's H.264 'V' frames with the phone's hardware decoder
  * (MediaCodec) straight onto a Surface.
  *
- * Every frame is acknowledged once it has been drawn, so the host's flow
- * control (a window of three updates) follows what the screen really shows.
- * Hardware decoders may hold a frame or two back; those are acknowledged early
- * so the host never stalls waiting for them.
+ * Every frame is acknowledged as soon as the decoder takes it. Waiting for
+ * the decoded picture made the host's flow control (a window of three
+ * updates) follow the decoder's internal buffering, and hardware decoders
+ * hold several large frames back, which slowed the host down for every
+ * viewer. A decoder that falls behind stops taking input, and frames waiting
+ * for it are not acknowledged, so the host still slows down for a phone that
+ * really cannot keep up.
  */
 class VideoDecoder(
     private val ack: (Long) -> Unit,
@@ -141,13 +144,13 @@ class VideoDecoder(
                 buf.put(f.data)
                 c.queueInputBuffer(index, 0, f.data.size, f.seq, if (f.key) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                 inDecoder.addLast(f.seq)
+                ackUpTo(f.seq)
             } catch (e: Exception) {
                 Log.e(TAG, "queue input", e)
                 failed()
                 return
             }
         }
-        while (inDecoder.size > 2) ackUpTo(inDecoder.first())
     }
 
     private fun ackUpTo(seq: Long) {
