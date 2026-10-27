@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remoter</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="connect-view">
+  <h1>Remoter</h1>
+  <p>Enter the ID and password shown on the remote computer.</p>
+  <form id="connect-form">
+    <label>Partner ID <input id="id" inputmode="numeric" autocomplete="off" placeholder="123 456 789" required></label>
+    <label>Password <input id="password" type="password" autocomplete="off" required></label>
+    <button type="submit">Connect</button>
+    <p id="status" role="status"></p>
+  </form>
+</main>
+<div id="session-view" hidden>
+  <header>
+    <span id="session-label"></span>
+    <button id="disconnect">Disconnect</button>
+  </header>
+  <canvas id="screen" tabindex="0"></canvas>
+</div>
+<script src="viewer.js"></script>
+</body>
+</html>
