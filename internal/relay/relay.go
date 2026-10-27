@@ -137,11 +137,12 @@ func (s *Server) serveHost(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(data, &m) != nil {
 			continue
 		}
-		switch m.Type {
-		case protocol.TypeClipboard:
-			out, _ := json.Marshal(protocol.Message{Type: protocol.TypeClipboard, Text: m.Text})
+		switch {
+		case protocol.ToViewers(m.Type):
+			m.Viewer, m.Password = "", ""
+			out, _ := json.Marshal(m)
 			h.broadcast(outgoing{websocket.MessageText, out})
-		case protocol.TypeAuthResult:
+		case m.Type == protocol.TypeAuthResult:
 			h.mu.Lock()
 			ch := h.pending[m.Viewer]
 			delete(h.pending, m.Viewer)

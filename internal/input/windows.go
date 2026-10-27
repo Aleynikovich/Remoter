@@ -160,6 +160,12 @@ func (w *windows) ReleaseAll(viewer string) {
 	delete(w.buttons, viewer)
 }
 
+func (w *windows) SetDisplay(display image.Rectangle) {
+	w.mu.Lock()
+	w.display = display
+	w.mu.Unlock()
+}
+
 func (w *windows) move(x, y float64) {
 	p := toScreen(w.display, x, y)
 	vx, vy := metric(smXVirtualScreen), metric(smYVirtualScreen)

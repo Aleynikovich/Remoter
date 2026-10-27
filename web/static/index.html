@@ -22,9 +22,25 @@
     <span id="session-label"></span>
     <span id="stats"></span>
     <span id="notice" role="status"></span>
+    <select id="display" title="Display" hidden></select>
+    <select id="keys" title="Send a key combination">
+      <option value="">Send keys…</option>
+      <option value="MetaLeft">Windows key</option>
+      <option value="MetaLeft+KeyR">Win+R (Run)</option>
+      <option value="MetaLeft+KeyD">Win+D (Desktop)</option>
+      <option value="MetaLeft+KeyE">Win+E (Explorer)</option>
+      <option value="AltLeft+Tab">Alt+Tab</option>
+      <option value="AltLeft+F4">Alt+F4</option>
+      <option value="ControlLeft+ShiftLeft+Escape">Ctrl+Shift+Esc (Task Manager)</option>
+      <option value="ControlLeft+KeyW">Ctrl+W</option>
+      <option value="ControlLeft+KeyT">Ctrl+T</option>
+      <option value="ControlLeft+KeyN">Ctrl+N</option>
+    </select>
+    <button id="scale" class="secondary" title="Switch between fit to window and actual size">1:1</button>
+    <button id="fullscreen" class="secondary">Full screen</button>
     <button id="disconnect">Disconnect</button>
   </header>
-  <canvas id="screen" tabindex="0"></canvas>
+  <div id="screen-wrap"><canvas id="screen" tabindex="0"></canvas></div>
 </div>
 <script src="viewer.js"></script>
 </body>

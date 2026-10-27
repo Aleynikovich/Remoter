@@ -32,6 +32,14 @@ const (
 	// viewer -> server -> host, or host -> server -> every viewer: the
 	// sender's clipboard now holds Text.
 	TypeClipboard = "clipboard"
+	// host -> server -> every viewer: the mouse pointer now looks like
+	// Cursor, a CSS cursor name.
+	TypeCursor = "cursor"
+	// host -> server -> every viewer: the host has Count displays and is
+	// showing Display (0-based).
+	TypeDisplays = "displays"
+	// viewer -> server -> host: show Display instead.
+	TypeSelectDisplay = "select_display"
 	// server -> host: a viewer went away.
 	TypeViewerLeft = "viewer_left"
 	// server -> any: something went wrong; the connection is usually closed next.
@@ -49,13 +57,26 @@ type Message struct {
 	Input    *Input `json:"input,omitempty"`
 	Seq      uint32 `json:"seq,omitempty"`
 	Text     string `json:"text,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+	Display  int    `json:"display,omitempty"`
+	Count    int    `json:"count,omitempty"`
 }
 
 // FromViewer reports whether the relay should pass a viewer message of this
 // type on to the host.
 func FromViewer(typ string) bool {
 	switch typ {
-	case TypeInput, TypeRefresh, TypeAck, TypeClipboard:
+	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay:
+		return true
+	}
+	return false
+}
+
+// ToViewers reports whether the relay should pass a host message of this
+// type on to every viewer.
+func ToViewers(typ string) bool {
+	switch typ {
+	case TypeClipboard, TypeCursor, TypeDisplays:
 		return true
 	}
 	return false

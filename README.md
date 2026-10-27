@@ -64,6 +64,17 @@ give it keyboard focus.
   after a click or key press, so if it arrives later it is copied on your next
   click or key press in the viewer. `-no-clipboard` turns sharing off.
 * On a Mac viewer, Cmd is sent as Ctrl, so Cmd+C and Cmd+V work as expected.
+* The pointer in the viewer takes the remote pointer's shape (text beam,
+  hand, resize arrows...), so it reacts instantly instead of waiting for the
+  screen image.
+* The toolbar has a display picker (when the host has several monitors), a
+  1:1 / Fit toggle, full screen, and a "Send keys" menu for combinations your
+  own computer would catch first (Windows key, Alt+Tab, Ctrl+Shift+Esc...).
+  Ctrl+Alt+Del cannot be sent: Windows only accepts it from a system service.
+* In full screen over HTTPS or localhost, Chrome and Edge also capture
+  Esc, Alt+Tab and the Windows key directly (hold Esc to leave).
+* Keys still held when the viewer loses focus are released on the remote
+  computer, so Alt or Ctrl never stay stuck.
 * Keys are sent by physical position, so the Windows keyboard layout decides
   which character is typed. Shortcuts the browser keeps for itself (such as
   Ctrl+W) cannot be forwarded.
@@ -85,6 +96,7 @@ go test -race ./...
 | `internal/capture` | screen and test-pattern sources (Windows: reusable GDI capture) |
 | `internal/stream` | changed-tile detection and the binary screen update format |
 | `internal/clipboard` | host clipboard access (Windows) |
+| `internal/cursor` | host pointer shape (Windows) |
 | `internal/input` | applies mouse/keyboard on the host (Windows: SendInput) |
 | `internal/protocol` | wire messages |
 | `web/static` | browser viewer |

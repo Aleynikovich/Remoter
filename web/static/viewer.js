@@ -37,6 +37,10 @@ function connect(id, password) {
       $("session-view").hidden = false;
       ws.send(JSON.stringify({ type: "refresh" }));
       canvas.focus();
+    } else if (msg.type === "cursor") {
+      canvas.style.cursor = msg.cursor;
+    } else if (msg.type === "displays") {
+      showDisplays(msg.count || 1, msg.display || 0);
     } else if (msg.type === "clipboard") {
       remoteClipboard(msg.text);
     } else if (msg.type === "error") {
@@ -72,6 +76,7 @@ async function drawUpdate(sock, buf) {
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
+    applyScale();
   }
   rects.forEach((r, i) => {
     ctx2d.drawImage(bitmaps[i], r.x, r.y);
@@ -140,6 +145,16 @@ function sendV() {
   sendInput({ kind: "keyup", key: "v", code: "KeyV" });
 }
 
+// Keys held down on the remote computer. If the viewer loses focus (say,
+// Alt+Tab locally) the key-up never arrives, so they are released then.
+const held = new Map();
+function releaseHeld() {
+  for (const [code, key] of held) sendInput({ kind: "keyup", key, code });
+  held.clear();
+}
+window.addEventListener("blur", releaseHeld);
+canvas.addEventListener("blur", releaseHeld);
+
 canvas.addEventListener("keydown", (e) => {
   flushClipboard();
   if (e.code === "KeyV" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
@@ -148,12 +163,67 @@ canvas.addEventListener("keydown", (e) => {
     return;
   }
   e.preventDefault();
+  held.set(keyCode(e), e.key);
   sendInput({ kind: "keydown", key: e.key, code: keyCode(e) });
 });
 canvas.addEventListener("keyup", (e) => {
   e.preventDefault();
   if (e.code === swallowKeyUp) { swallowKeyUp = null; return; }
+  held.delete(keyCode(e));
   sendInput({ kind: "keyup", key: e.key, code: keyCode(e) });
+});
+
+// Key combinations the browser or the local OS would otherwise keep.
+$("keys").addEventListener("change", (e) => {
+  const codes = e.target.value.split("+").filter(Boolean);
+  e.target.value = "";
+  for (const code of codes) sendInput({ kind: "keydown", key: "", code });
+  for (const code of codes.reverse()) sendInput({ kind: "keyup", key: "", code });
+  canvas.focus();
+});
+
+// Full screen. Where the browser allows it (HTTPS or localhost, Chrome and
+// Edge) the keyboard is locked too, so Esc, Alt+Tab and the Windows key go to
+// the remote computer; hold Esc to leave.
+$("fullscreen").addEventListener("click", async () => {
+  if (document.fullscreenElement) {
+    await document.exitFullscreen();
+    return;
+  }
+  await $("session-view").requestFullscreen();
+  if (navigator.keyboard && navigator.keyboard.lock) navigator.keyboard.lock().catch(() => {});
+  canvas.focus();
+});
+document.addEventListener("fullscreenchange", () => {
+  $("fullscreen").textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+});
+
+// Scaling: fit the window, or show remote pixels one to one with scrollbars.
+let actualSize = false;
+function applyScale() {
+  $("screen-wrap").classList.toggle("actual", actualSize);
+  $("scale").textContent = actualSize ? "Fit" : "1:1";
+  canvas.style.width = actualSize ? `${canvas.width / devicePixelRatio}px` : "";
+  canvas.style.height = actualSize ? `${canvas.height / devicePixelRatio}px` : "";
+}
+$("scale").addEventListener("click", () => {
+  actualSize = !actualSize;
+  applyScale();
+  canvas.focus();
+});
+
+// Display switching on hosts with several monitors.
+function showDisplays(count, current) {
+  const sel = $("display");
+  sel.hidden = count < 2;
+  if (sel.options.length !== count) {
+    sel.replaceChildren(...Array.from({ length: count }, (_, i) => new Option(`Display ${i + 1}`, i)));
+  }
+  sel.value = current;
+}
+$("display").addEventListener("change", (e) => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "select_display", display: Number(e.target.value) }));
+  canvas.focus();
 });
 document.addEventListener("paste", (e) => {
   if (pasteTimer === null) return;

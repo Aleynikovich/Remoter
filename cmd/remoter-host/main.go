@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/aleynikovich/remoter/internal/capture"
 	"github.com/aleynikovich/remoter/internal/clipboard"
+	"github.com/aleynikovich/remoter/internal/cursor"
 	"github.com/aleynikovich/remoter/internal/host"
 	"github.com/aleynikovich/remoter/internal/input"
 )
@@ -28,17 +30,22 @@ func main() {
 	noClipboard := flag.Bool("no-clipboard", false, "do not share the clipboard with viewers")
 	flag.Parse()
 
-	var src capture.Source = &capture.Screen{Display: *display}
-	var in host.InputHandler = input.Log{}
+	screen := capture.NewScreen(*display)
+	var src capture.Source = screen
+	var in input.Handler = input.Log{}
+	var mons host.Monitors
 	if *test {
 		src = capture.TestPattern{}
-	} else if !*viewOnly {
-		native, err := input.New(screenshot.GetDisplayBounds(*display))
-		if err != nil {
-			log.Printf("remote control disabled: %v", err)
-		} else {
-			in = native
+	} else {
+		if !*viewOnly {
+			native, err := input.New(screenshot.GetDisplayBounds(*display))
+			if err != nil {
+				log.Printf("remote control disabled: %v", err)
+			} else {
+				in = native
+			}
 		}
+		mons = monitors{screen, in}
 	}
 	var clip clipboard.Clipboard
 	if !*noClipboard && !*viewOnly {
@@ -56,6 +63,8 @@ func main() {
 		FPS:       *fps,
 		Quality:   *quality,
 		Clipboard: clip,
+		Cursor:    cursor.Shape,
+		Monitors:  mons,
 		OnRegistered: func(id string) {
 			fmt.Printf("\n  Your ID:   %s %s %s\n  Password:  %s\n\n", id[:3], id[3:6], id[6:], *password)
 		},
@@ -66,4 +75,22 @@ func main() {
 	if err := a.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatal(err)
 	}
+}
+
+// monitors switches both screen capture and input to another display.
+type monitors struct {
+	screen *capture.Screen
+	input  input.Handler
+}
+
+func (m monitors) Count() int   { return screenshot.NumActiveDisplays() }
+func (m monitors) Current() int { return m.screen.Display() }
+
+func (m monitors) Select(display int) error {
+	if display < 0 || display >= screenshot.NumActiveDisplays() {
+		return errors.New("no such display")
+	}
+	m.input.SetDisplay(screenshot.GetDisplayBounds(display))
+	m.screen.SetDisplay(display)
+	return nil
 }

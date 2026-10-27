@@ -135,6 +135,8 @@ func (g *gdi) setup() error {
 	return nil
 }
 
+func (g *gdi) Close() { g.release() }
+
 func (g *gdi) release() {
 	if g.memDC != 0 {
 		if g.old != 0 {

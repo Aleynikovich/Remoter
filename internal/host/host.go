@@ -47,6 +47,13 @@ type releaser interface {
 	ReleaseAll(viewer string)
 }
 
+// Monitors switches the shared display.
+type Monitors interface {
+	Count() int
+	Current() int
+	Select(display int) error
+}
+
 // LogInput logs input events instead of applying them.
 type LogInput struct{}
 
@@ -68,6 +75,11 @@ type Agent struct {
 
 	// Clipboard, if set, is shared with viewers in both directions.
 	Clipboard clipboard.Clipboard
+	// Cursor, if set, returns the pointer shape as a CSS cursor name. The
+	// viewer shows it on its own pointer, which moves without lag.
+	Cursor func() string
+	// Monitors, if set, lets viewers switch between displays.
+	Monitors Monitors
 
 	// OnRegistered is called with the session ID once the relay assigns it.
 	OnRegistered func(id string)
@@ -103,6 +115,14 @@ func (f *flow) poke() {
 func (f *flow) join(viewer string) {
 	f.mu.Lock()
 	f.viewers[viewer] = &viewerState{acked: f.seq, lastAck: time.Now()}
+	f.full = true
+	f.mu.Unlock()
+	f.poke()
+}
+
+// refresh makes the next update cover the whole screen.
+func (f *flow) refresh() {
+	f.mu.Lock()
 	f.full = true
 	f.mu.Unlock()
 	f.poke()
@@ -253,6 +273,21 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		case protocol.TypeRefresh:
 			a.flow.join(m.Viewer)
+			if err := a.sendDisplays(ctx, conn); err != nil {
+				return err
+			}
+		case protocol.TypeSelectDisplay:
+			if a.Monitors == nil {
+				continue
+			}
+			if err := a.Monitors.Select(m.Display); err != nil {
+				log.Printf("viewer %s: select display %d: %v", m.Viewer, m.Display, err)
+				continue
+			}
+			a.flow.refresh()
+			if err := a.sendDisplays(ctx, conn); err != nil {
+				return err
+			}
 		case protocol.TypeAck:
 			a.flow.ack(m.Viewer, m.Seq)
 		case protocol.TypeClipboard:
@@ -277,6 +312,7 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 	enc := &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter}
 	interval := time.Second / time.Duration(a.FPS)
 	var buf []byte
+	var cursor string
 	next := time.Now()
 	for {
 		wait := time.Until(next)
@@ -302,6 +338,14 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 		seq, full := a.flow.next()
+		if a.Cursor != nil {
+			if c := a.Cursor(); c != "" && (c != cursor || full) {
+				cursor = c
+				if err := send(ctx, conn, protocol.Message{Type: protocol.TypeCursor, Cursor: c}); err != nil {
+					return err
+				}
+			}
+		}
 		u, err := enc.Encode(img, full, time.Now())
 		if err != nil {
 			return err
@@ -316,6 +360,14 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 		}
 		a.flow.sent(seq)
 	}
+}
+
+// sendDisplays tells viewers which displays they can switch between.
+func (a *Agent) sendDisplays(ctx context.Context, conn *websocket.Conn) error {
+	if a.Monitors == nil {
+		return nil
+	}
+	return send(ctx, conn, protocol.Message{Type: protocol.TypeDisplays, Count: a.Monitors.Count(), Display: a.Monitors.Current()})
 }
 
 // watchClipboard sends the host clipboard to viewers whenever it changes.

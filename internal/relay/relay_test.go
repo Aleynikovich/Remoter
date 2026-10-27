@@ -242,6 +242,67 @@ func TestClipboardIsSharedBothWays(t *testing.T) {
 	}
 }
 
+type fakeMonitors struct {
+	mu      sync.Mutex
+	current int
+}
+
+func (m *fakeMonitors) Count() int { return 2 }
+
+func (m *fakeMonitors) Current() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.current
+}
+
+func (m *fakeMonitors) Select(d int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.current = d
+	return nil
+}
+
+// readText returns the next control message of the given type, skipping
+// screen updates and other messages.
+func readText(t *testing.T, c *websocket.Conn, typ string) protocol.Message {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		mt, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("no %s message: %v", typ, err)
+		}
+		var m protocol.Message
+		if mt == websocket.MessageText && json.Unmarshal(data, &m) == nil && m.Type == typ {
+			return m
+		}
+	}
+}
+
+func TestCursorAndDisplaySwitching(t *testing.T) {
+	mons := &fakeMonitors{}
+	base, id := startHostWith(t, &host.Agent{
+		Password: "secret",
+		Cursor:   func() string { return "text" },
+		Monitors: mons,
+	})
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+
+	if m := readText(t, c, protocol.TypeDisplays); m.Count != 2 || m.Display != 0 {
+		t.Fatalf("got %+v, want 2 displays showing the first", m)
+	}
+	if m := readText(t, c, protocol.TypeCursor); m.Cursor != "text" {
+		t.Fatalf("got cursor %q, want text", m.Cursor)
+	}
+
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeSelectDisplay, Display: 1})
+	if m := readText(t, c, protocol.TypeDisplays); m.Display != 1 || mons.Current() != 1 {
+		t.Fatalf("got %+v, want the second display selected", m)
+	}
+}
+
 func TestWrongPasswordIsRejected(t *testing.T) {
 	base, id := startHost(t, "secret", nil)
 	_, m := dialViewer(t, base, id, "nope")
