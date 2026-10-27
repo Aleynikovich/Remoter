@@ -120,7 +120,9 @@ func TestDecodeRoundTrip(t *testing.T) {
 		}
 		// Luma of a pixel in the middle should survive the trip roughly.
 		got := *(*byte)(unsafe.Add(p.Planes[0], 120*p.Strides[0]+160))
-		want := luma(img.Pix[img.PixOffset(160, 120):])
+		px := img.Pix[img.PixOffset(160, 120):]
+		want := byte((66*int(px[0])+129*int(px[1])+25*int(px[2])+128)>>8 + 16) // BT.601 limited
+
 		if diff := int(got) - int(want); diff < -24 || diff > 24 {
 			t.Errorf("frame %d: luma %d, want about %d", i, got, want)
 		}
