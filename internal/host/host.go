@@ -34,6 +34,9 @@ const (
 	// staleAfter is how long a viewer may go without acking before the host
 	// stops waiting for it. The relay drops it once its queue overflows.
 	staleAfter = 5 * time.Second
+	// lagAfter is how long the host waits for one viewer while another has
+	// room, so a slow phone does not freeze everyone else's picture.
+	lagAfter = time.Second
 	// refineAfter is how long a tile must stay still before it is resent
 	// at high quality.
 	refineAfter = 300 * time.Millisecond
@@ -136,6 +139,7 @@ type viewerState struct {
 	acked   uint32
 	lastAck time.Time
 	video   bool
+	full    time.Time // when its window filled up, zero while it has room
 }
 
 func (f *flow) poke() {
@@ -198,19 +202,31 @@ func (f *flow) watched() bool {
 }
 
 // ready reports whether someone is watching and every live viewer has room
-// for another update.
+// for another update. A viewer that has had no room for lagAfter while
+// another one does is no longer waited for; the relay drops it if it falls
+// too far behind, and it reconnects.
 func (f *flow) ready() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.viewers) == 0 {
 		return false
 	}
+	now := time.Now()
+	room, waiting := false, false
 	for _, v := range f.viewers {
-		if f.seq-v.acked >= window && time.Since(v.lastAck) < staleAfter {
-			return false
+		if f.seq-v.acked < window || now.Sub(v.lastAck) >= staleAfter {
+			v.full = time.Time{}
+			room = true
+			continue
+		}
+		if v.full.IsZero() {
+			v.full = now
+		}
+		if now.Sub(v.full) < lagAfter {
+			waiting = true
 		}
 	}
-	return true
+	return room && !waiting
 }
 
 // next reserves a sequence number for an update and reports whether it must
@@ -505,7 +521,7 @@ func (t *timings) report(video bool) {
 		}
 		log.Printf("stream %s %dx%d: %.1f fps, %.1f Mbit/s; per capture: capture %s, encode %s, send %s; waited %.0f%% of the time for viewers or the frame interval",
 			mode, t.size.X, t.size.Y, float64(t.frames)/el.Seconds(), float64(t.bytes)*8/1e6/el.Seconds(),
-			per(t.capture), per(t.encode), per(t.send), 100*t.wait.Seconds()/el.Seconds())
+			per(t.capture), per(t.encode), per(t.send), min(100, 100*t.wait.Seconds()/el.Seconds()))
 	}
 	*t = timings{start: time.Now()}
 }
