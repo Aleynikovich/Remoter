@@ -3,8 +3,9 @@
 An open-source remote desktop tool in the spirit of TeamViewer: share your
 screen, let someone control it, and connect with a 9-digit ID and a password.
 
-> Status: early prototype. Screen streaming works end to end; remote control
-> input is sent to the host but not applied yet. See the milestone issues.
+> Status: early prototype. Screen streaming works everywhere; mouse and
+> keyboard control works on Windows (macOS and Linux are still view-only).
+> See the milestone issues.
 
 ## How it works
 
@@ -41,7 +42,21 @@ go run ./cmd/remoter-host -test-pattern
 
 Open http://localhost:8080, enter the ID and password.
 
-Host flags: `-server`, `-password`, `-fps`, `-quality`, `-display`, `-test-pattern`.
+Host flags: `-server`, `-password`, `-fps`, `-quality`, `-display`,
+`-view-only`, `-test-pattern`.
+
+### Controlling a Windows computer
+
+Run `remoter-server` and `remoter-host` on the Windows machine, then open
+`http://<windows-ip>:8080` from the other computer. Click into the screen to
+give it keyboard focus.
+
+* Windows ignores injected input aimed at programs running as administrator
+  (and at UAC prompts or the lock screen) unless the host also runs as
+  administrator.
+* Keys are sent by physical position, so the Windows keyboard layout decides
+  which character is typed. Shortcuts the browser keeps for itself (such as
+  Ctrl+W) cannot be forwarded.
 
 ## Development
 
@@ -58,5 +73,6 @@ go test -race ./...
 | `internal/relay` | rendezvous, auth forwarding, frame/input relay |
 | `internal/host` | host agent session logic |
 | `internal/capture` | screen and test-pattern sources |
+| `internal/input` | applies mouse/keyboard on the host (Windows: SendInput) |
 | `internal/protocol` | wire messages |
 | `web/static` | browser viewer |

@@ -27,6 +27,11 @@ type InputHandler interface {
 	HandleInput(viewer string, in protocol.Input)
 }
 
+// releaser is implemented by input handlers that track held keys and buttons.
+type releaser interface {
+	ReleaseAll(viewer string)
+}
+
 // LogInput logs input events instead of applying them.
 type LogInput struct{}
 
@@ -133,6 +138,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		case protocol.TypeViewerLeft:
 			a.viewers.Add(-1)
+			if r, ok := a.Input.(releaser); ok {
+				r.ReleaseAll(m.Viewer)
+			}
 			log.Printf("viewer %s left", m.Viewer)
 		case protocol.TypeInput:
 			if m.Input != nil {

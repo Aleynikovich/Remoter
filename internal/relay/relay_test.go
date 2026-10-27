@@ -22,6 +22,11 @@ type inputRecorder chan protocol.Input
 
 func (r inputRecorder) HandleInput(_ string, in protocol.Input) { r <- in }
 
+type releaseRecorder chan string
+
+func (r releaseRecorder) HandleInput(string, protocol.Input) {}
+func (r releaseRecorder) ReleaseAll(viewer string)           { r <- viewer }
+
 // startHost runs a relay and a host agent and returns the relay's ws URL and
 // the host's session ID.
 func startHost(t *testing.T, password string, input host.InputHandler) (string, string) {
@@ -143,5 +148,20 @@ func TestLockoutAfterRepeatedFailures(t *testing.T) {
 	_, m := dialViewer(t, base, id, "secret")
 	if m.Type != protocol.TypeError || !strings.Contains(m.Error, "too many") {
 		t.Fatalf("got %+v, want lockout", m)
+	}
+}
+
+func TestHeldInputReleasedWhenViewerLeaves(t *testing.T) {
+	released := make(releaseRecorder, 1)
+	base, id := startHost(t, "secret", released)
+	c, m := dialViewer(t, base, id, "secret")
+	if m.Type != protocol.TypeConnected {
+		t.Fatalf("got %+v, want connected", m)
+	}
+	c.Close(websocket.StatusNormalClosure, "")
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("host did not release input after the viewer left")
 	}
 }
