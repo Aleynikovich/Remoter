@@ -153,9 +153,17 @@ function releaseHeld() {
   held.clear();
 }
 window.addEventListener("blur", releaseHeld);
-canvas.addEventListener("blur", releaseHeld);
 
-canvas.addEventListener("keydown", (e) => {
+// Keys are taken at the window, not just the canvas, so typing still reaches
+// the remote computer after a click on the toolbar or the black border. Only
+// the toolbar's own menus keep their keys.
+function forRemote(e) {
+  const t = e.target;
+  return ws && !$("session-view").hidden && !(t.closest && t.closest("header select, input"));
+}
+
+window.addEventListener("keydown", (e) => {
+  if (!forRemote(e)) return;
   flushClipboard();
   if (e.code === "KeyV" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
     swallowKeyUp = "KeyV";
@@ -163,15 +171,18 @@ canvas.addEventListener("keydown", (e) => {
     return;
   }
   e.preventDefault();
+  e.stopPropagation();
   held.set(keyCode(e), e.key);
   sendInput({ kind: "keydown", key: e.key, code: keyCode(e) });
-});
-canvas.addEventListener("keyup", (e) => {
+}, true);
+window.addEventListener("keyup", (e) => {
+  if (!forRemote(e)) return;
   e.preventDefault();
+  e.stopPropagation();
   if (e.code === swallowKeyUp) { swallowKeyUp = null; return; }
-  held.delete(keyCode(e));
+  if (!held.delete(keyCode(e))) return; // its key-down went elsewhere
   sendInput({ kind: "keyup", key: e.key, code: keyCode(e) });
-});
+}, true);
 
 // Key combinations the browser or the local OS would otherwise keep.
 $("keys").addEventListener("change", (e) => {
@@ -182,20 +193,27 @@ $("keys").addEventListener("change", (e) => {
   canvas.focus();
 });
 
-// Full screen. Where the browser allows it (HTTPS or localhost, Chrome and
-// Edge) the keyboard is locked too, so Esc, Alt+Tab and the Windows key go to
-// the remote computer; hold Esc to leave.
+// Full screen. In Chromium browsers (Chrome, Edge, Vivaldi, Brave) the
+// keyboard is locked too, so browser shortcuts (Ctrl+T, Ctrl+W, F5...), Esc,
+// Alt+Tab and the Windows key go to the remote computer; hold Esc to leave.
+// Keyboard Lock only works on HTTPS or localhost, or when the browser is told
+// to trust this address (see the README).
+const canLock = !!(navigator.keyboard && navigator.keyboard.lock) && window.isSecureContext;
 $("fullscreen").addEventListener("click", async () => {
   if (document.fullscreenElement) {
     await document.exitFullscreen();
     return;
   }
-  await $("session-view").requestFullscreen();
-  if (navigator.keyboard && navigator.keyboard.lock) navigator.keyboard.lock().catch(() => {});
+  if (canLock) navigator.keyboard.lock().catch(() => {});
+  await $("session-view").requestFullscreen({ navigationUI: "hide" });
   canvas.focus();
+  if (!canLock) notice("Browser shortcuts are not captured here: keyboard lock needs HTTPS (see README)", 6000);
 });
 document.addEventListener("fullscreenchange", () => {
-  $("fullscreen").textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+  const full = !!document.fullscreenElement;
+  $("fullscreen").textContent = full ? "Exit full screen" : "Full screen";
+  if (!full && navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock();
+  releaseHeld();
 });
 
 // Scaling: fit the window, or show remote pixels one to one with scrollbars.
@@ -271,8 +289,8 @@ function flushClipboard() {
 }
 
 let noticeTimer = null;
-function notice(text) {
+function notice(text, ms = 2000) {
   $("notice").textContent = text;
   clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => { $("notice").textContent = ""; }, 2000);
+  noticeTimer = setTimeout(() => { $("notice").textContent = ""; }, ms);
 }

@@ -76,8 +76,34 @@ give it keyboard focus.
   1:1 / Fit toggle, full screen, and a "Send keys" menu for combinations your
   own computer would catch first (Windows key, Alt+Tab, Ctrl+Shift+Esc...).
   Ctrl+Alt+Del cannot be sent: Windows only accepts it from a system service.
-* In full screen over HTTPS or localhost, Chrome and Edge also capture
-  Esc, Alt+Tab and the Windows key directly (hold Esc to leave).
+* In full screen, Chromium browsers (Chrome, Edge, Vivaldi, Brave) lock the
+  keyboard, so browser shortcuts, Esc, Alt+Tab and the Windows key go to the
+  remote computer (hold Esc to leave). Keyboard Lock only works on HTTPS or
+  localhost. On plain `http://` over a private network, tell the browser to
+  trust the address: open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+  (`vivaldi://flags/...` in Vivaldi, `edge://flags/...` in Edge), add e.g.
+  `http://100.102.208.35:8080`, enable it and restart the browser. That also
+  lets the clipboard work without waiting for a click.
+
+### Linux viewers with a tiling compositor (Hyprland, Sway...)
+
+The compositor sees key combinations before any browser does, so binds such
+as Super+Q never reach the remote computer, even with Keyboard Lock. Add a
+passthrough mode that disables your binds while you work on the remote
+machine. For Hyprland, in `hyprland.conf`:
+
+```
+# Super+Escape toggles passthrough: all keys go to the focused window.
+bind = SUPER, Escape, submap, passthru
+submap = passthru
+bind = SUPER, Escape, submap, reset
+submap = reset
+```
+
+Press Super+Escape with the viewer in full screen, work on the remote
+computer, and press Super+Escape again to get your binds back. Super+Escape
+itself and the kernel's Ctrl+Alt+F1..F12 VT switch still stay local. In Sway
+the same idea is a `mode "passthrough"` with only a binding to leave it.
 * Keys still held when the viewer loses focus are released on the remote
   computer, so Alt or Ctrl never stay stuck.
 * Keys are sent by physical position, so the Windows keyboard layout decides
