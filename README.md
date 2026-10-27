@@ -47,7 +47,7 @@ go run ./cmd/remoter-host -test-pattern
 Open http://localhost:8080, enter the ID and password.
 
 Host flags: `-server`, `-password`, `-fps`, `-quality`, `-display`,
-`-view-only`, `-test-pattern`.
+`-view-only`, `-no-clipboard`, `-test-pattern`.
 
 ### Controlling a Windows computer
 
@@ -58,6 +58,12 @@ give it keyboard focus.
 * Windows ignores injected input aimed at programs running as administrator
   (and at UAC prompts or the lock screen) unless the host also runs as
   administrator.
+* The clipboard is shared both ways (text only). Ctrl+V in the viewer pastes
+  your local clipboard on the remote computer. Anything copied on the remote
+  computer lands in your local clipboard; browsers only allow that right
+  after a click or key press, so if it arrives later it is copied on your next
+  click or key press in the viewer. `-no-clipboard` turns sharing off.
+* On a Mac viewer, Cmd is sent as Ctrl, so Cmd+C and Cmd+V work as expected.
 * Keys are sent by physical position, so the Windows keyboard layout decides
   which character is typed. Shortcuts the browser keeps for itself (such as
   Ctrl+W) cannot be forwarded.
@@ -78,6 +84,7 @@ go test -race ./...
 | `internal/host` | host agent session logic |
 | `internal/capture` | screen and test-pattern sources (Windows: reusable GDI capture) |
 | `internal/stream` | changed-tile detection and the binary screen update format |
+| `internal/clipboard` | host clipboard access (Windows) |
 | `internal/input` | applies mouse/keyboard on the host (Windows: SendInput) |
 | `internal/protocol` | wire messages |
 | `web/static` | browser viewer |

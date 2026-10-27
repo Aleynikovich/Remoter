@@ -37,6 +37,8 @@ function connect(id, password) {
       $("session-view").hidden = false;
       ws.send(JSON.stringify({ type: "refresh" }));
       canvas.focus();
+    } else if (msg.type === "clipboard") {
+      remoteClipboard(msg.text);
     } else if (msg.type === "error") {
       lastError = msg.error;
     }
@@ -114,9 +116,93 @@ canvas.addEventListener("mousemove", (e) => {
   moveQueued = point(e);
   if (first) requestAnimationFrame(() => { sendInput({ kind: "mousemove", ...moveQueued }); moveQueued = null; });
 });
-canvas.addEventListener("mousedown", (e) => { canvas.focus(); sendInput({ kind: "mousedown", button: e.button, ...point(e) }); });
+canvas.addEventListener("mousedown", (e) => { canvas.focus(); flushClipboard(); sendInput({ kind: "mousedown", button: e.button, ...point(e) }); });
 canvas.addEventListener("mouseup", (e) => sendInput({ kind: "mouseup", button: e.button, ...point(e) }));
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("wheel", (e) => { e.preventDefault(); sendInput({ kind: "wheel", deltaY: e.deltaY, ...point(e) }); }, { passive: false });
-canvas.addEventListener("keydown", (e) => { e.preventDefault(); sendInput({ kind: "keydown", key: e.key, code: e.code }); });
-canvas.addEventListener("keyup", (e) => { e.preventDefault(); sendInput({ kind: "keyup", key: e.key, code: e.code }); });
+
+// Keyboard. On a Mac, Cmd is sent as Ctrl so Cmd+C / Cmd+V do what a Mac user
+// expects on a Windows host.
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+function keyCode(e) {
+  if (isMac && e.code === "MetaLeft") return "ControlLeft";
+  if (isMac && e.code === "MetaRight") return "ControlRight";
+  return e.code;
+}
+
+// Ctrl+V (Cmd+V on a Mac) is let through to the browser so it fires a paste
+// event with the local clipboard; that text goes to the host clipboard before
+// the V key is sent, so the remote paste uses it.
+let pasteTimer = null;
+let swallowKeyUp = null;
+function sendV() {
+  sendInput({ kind: "keydown", key: "v", code: "KeyV" });
+  sendInput({ kind: "keyup", key: "v", code: "KeyV" });
+}
+
+canvas.addEventListener("keydown", (e) => {
+  flushClipboard();
+  if (e.code === "KeyV" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.repeat) {
+    swallowKeyUp = "KeyV";
+    pasteTimer = setTimeout(() => { pasteTimer = null; sendV(); }, 200);
+    return;
+  }
+  e.preventDefault();
+  sendInput({ kind: "keydown", key: e.key, code: keyCode(e) });
+});
+canvas.addEventListener("keyup", (e) => {
+  e.preventDefault();
+  if (e.code === swallowKeyUp) { swallowKeyUp = null; return; }
+  sendInput({ kind: "keyup", key: e.key, code: keyCode(e) });
+});
+document.addEventListener("paste", (e) => {
+  if (pasteTimer === null) return;
+  e.preventDefault();
+  clearTimeout(pasteTimer);
+  pasteTimer = null;
+  const text = e.clipboardData.getData("text/plain");
+  if (text && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "clipboard", text }));
+  sendV();
+});
+
+// Clipboard from the host. Browsers only let a page write the clipboard
+// shortly after a click or key press, which is normally the remote Ctrl+C
+// that changed it. If that window has passed, the text waits for the next
+// click or key press in the viewer.
+let pendingClipboard = null;
+function remoteClipboard(text) {
+  pendingClipboard = text;
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      if (pendingClipboard === text) pendingClipboard = null;
+      notice("Remote clipboard copied");
+    }, () => flushClipboard());
+  } else {
+    flushClipboard();
+  }
+}
+
+function flushClipboard() {
+  if (pendingClipboard === null) return;
+  const area = document.createElement("textarea");
+  area.value = pendingClipboard;
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { /* not allowed right now */ }
+  area.remove();
+  canvas.focus();
+  if (ok) {
+    pendingClipboard = null;
+    notice("Remote clipboard copied");
+  }
+}
+
+let noticeTimer = null;
+function notice(text) {
+  $("notice").textContent = text;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { $("notice").textContent = ""; }, 2000);
+}

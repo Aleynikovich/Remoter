@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/aleynikovich/remoter/internal/capture"
+	"github.com/aleynikovich/remoter/internal/clipboard"
 	"github.com/aleynikovich/remoter/internal/protocol"
 	"github.com/aleynikovich/remoter/internal/stream"
 )
@@ -32,6 +33,8 @@ const (
 	// refineAfter is how long a tile must stay still before it is resent
 	// at high quality.
 	refineAfter = 300 * time.Millisecond
+	// clipboardPoll is how often the host clipboard is checked for changes.
+	clipboardPoll = 250 * time.Millisecond
 )
 
 // InputHandler applies remote input events on the host.
@@ -63,10 +66,16 @@ type Agent struct {
 	// changing. Zero means 90.
 	RefineQuality int
 
+	// Clipboard, if set, is shared with viewers in both directions.
+	Clipboard clipboard.Clipboard
+
 	// OnRegistered is called with the session ID once the relay assigns it.
 	OnRegistered func(id string)
 
 	flow flow
+
+	clipMu  sync.Mutex
+	clipSeq uint32 // clipboard sequence number last sent or written
 }
 
 // flow tracks which viewers are watching and how far behind each one is.
@@ -113,6 +122,13 @@ func (f *flow) ack(viewer string, seq uint32) {
 	}
 	f.mu.Unlock()
 	f.poke()
+}
+
+// watched reports whether any viewer is streaming.
+func (f *flow) watched() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.viewers) > 0
 }
 
 // ready reports whether someone is watching and every live viewer has room
@@ -181,7 +197,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("dial relay: %w", err)
 	}
 	defer conn.CloseNow()
-	conn.SetReadLimit(1 << 16)
+	conn.SetReadLimit(1 << 20)
 
 	if err := send(ctx, conn, protocol.Message{Type: protocol.TypeRegister}); err != nil {
 		return err
@@ -205,6 +221,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		errc <- a.stream(ctx, conn)
 		cancel()
 	}()
+	if a.Clipboard != nil {
+		a.clipSeq = a.Clipboard.Seq()
+		go a.watchClipboard(ctx, conn)
+	}
 
 	for {
 		_, data, err := conn.Read(ctx)
@@ -235,6 +255,8 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.flow.join(m.Viewer)
 		case protocol.TypeAck:
 			a.flow.ack(m.Viewer, m.Seq)
+		case protocol.TypeClipboard:
+			a.setClipboard(m.Text)
 		case protocol.TypeViewerLeft:
 			a.flow.leave(m.Viewer)
 			if r, ok := a.Input.(releaser); ok {
@@ -294,6 +316,53 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 		}
 		a.flow.sent(seq)
 	}
+}
+
+// watchClipboard sends the host clipboard to viewers whenever it changes.
+func (a *Agent) watchClipboard(ctx context.Context, conn *websocket.Conn) {
+	t := time.NewTicker(clipboardPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		a.clipMu.Lock()
+		seq := a.Clipboard.Seq()
+		changed := seq != a.clipSeq
+		a.clipSeq = seq
+		a.clipMu.Unlock()
+		if !changed || !a.flow.watched() {
+			continue
+		}
+		text, err := a.Clipboard.ReadText()
+		if err != nil {
+			log.Printf("read clipboard: %v", err)
+			continue
+		}
+		if text == "" || len(text) > clipboard.MaxText {
+			continue
+		}
+		if err := send(ctx, conn, protocol.Message{Type: protocol.TypeClipboard, Text: text}); err != nil {
+			return
+		}
+	}
+}
+
+// setClipboard puts a viewer's clipboard text on the host clipboard.
+func (a *Agent) setClipboard(text string) {
+	if a.Clipboard == nil || text == "" || len(text) > clipboard.MaxText {
+		return
+	}
+	a.clipMu.Lock()
+	defer a.clipMu.Unlock()
+	if err := a.Clipboard.WriteText(text); err != nil {
+		log.Printf("write clipboard: %v", err)
+		return
+	}
+	// Do not echo the text back to the viewers.
+	a.clipSeq = a.Clipboard.Seq()
 }
 
 func send(ctx context.Context, c *websocket.Conn, m protocol.Message) error {

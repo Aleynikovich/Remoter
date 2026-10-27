@@ -12,6 +12,7 @@ import (
 	"github.com/kbinani/screenshot"
 
 	"github.com/aleynikovich/remoter/internal/capture"
+	"github.com/aleynikovich/remoter/internal/clipboard"
 	"github.com/aleynikovich/remoter/internal/host"
 	"github.com/aleynikovich/remoter/internal/input"
 )
@@ -24,6 +25,7 @@ func main() {
 	display := flag.Int("display", 0, "display index to share")
 	test := flag.Bool("test-pattern", false, "stream a generated test pattern instead of the screen")
 	viewOnly := flag.Bool("view-only", false, "let viewers watch but not control this computer")
+	noClipboard := flag.Bool("no-clipboard", false, "do not share the clipboard with viewers")
 	flag.Parse()
 
 	var src capture.Source = &capture.Screen{Display: *display}
@@ -38,6 +40,10 @@ func main() {
 			in = native
 		}
 	}
+	var clip clipboard.Clipboard
+	if !*noClipboard && !*viewOnly {
+		clip = clipboard.New()
+	}
 	if *password == "" {
 		*password = host.RandomPassword()
 	}
@@ -49,6 +55,7 @@ func main() {
 		Input:     in,
 		FPS:       *fps,
 		Quality:   *quality,
+		Clipboard: clip,
 		OnRegistered: func(id string) {
 			fmt.Printf("\n  Your ID:   %s %s %s\n  Password:  %s\n\n", id[:3], id[3:6], id[6:], *password)
 		},

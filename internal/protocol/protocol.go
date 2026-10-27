@@ -29,6 +29,9 @@ const (
 	TypeRefresh = "refresh"
 	// viewer -> server -> host: the update with this Seq has been drawn.
 	TypeAck = "ack"
+	// viewer -> server -> host, or host -> server -> every viewer: the
+	// sender's clipboard now holds Text.
+	TypeClipboard = "clipboard"
 	// server -> host: a viewer went away.
 	TypeViewerLeft = "viewer_left"
 	// server -> any: something went wrong; the connection is usually closed next.
@@ -45,13 +48,14 @@ type Message struct {
 	Error    string `json:"error,omitempty"`
 	Input    *Input `json:"input,omitempty"`
 	Seq      uint32 `json:"seq,omitempty"`
+	Text     string `json:"text,omitempty"`
 }
 
 // FromViewer reports whether the relay should pass a viewer message of this
 // type on to the host.
 func FromViewer(typ string) bool {
 	switch typ {
-	case TypeInput, TypeRefresh, TypeAck:
+	case TypeInput, TypeRefresh, TypeAck, TypeClipboard:
 		return true
 	}
 	return false

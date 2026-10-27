@@ -7,6 +7,7 @@ import (
 	"image/jpeg"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,9 +29,40 @@ type releaseRecorder chan string
 func (r releaseRecorder) HandleInput(string, protocol.Input) {}
 func (r releaseRecorder) ReleaseAll(viewer string)           { r <- viewer }
 
+// fakeClipboard is an in-memory clipboard.
+type fakeClipboard struct {
+	mu   sync.Mutex
+	seq  uint32
+	text string
+}
+
+func (c *fakeClipboard) Seq() uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seq
+}
+
+func (c *fakeClipboard) ReadText() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.text, nil
+}
+
+func (c *fakeClipboard) WriteText(s string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seq++
+	c.text = s
+	return nil
+}
+
 // startHost runs a relay and a host agent and returns the relay's ws URL and
 // the host's session ID.
 func startHost(t *testing.T, password string, input host.InputHandler) (string, string) {
+	return startHostWith(t, &host.Agent{Password: password, Input: input})
+}
+
+func startHostWith(t *testing.T, a *host.Agent) (string, string) {
 	t.Helper()
 	srv := httptest.NewServer(relay.New().Handler())
 	t.Cleanup(srv.Close)
@@ -39,14 +71,10 @@ func startHost(t *testing.T, password string, input host.InputHandler) (string, 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ids := make(chan string, 1)
-	a := &host.Agent{
-		ServerURL:    base + "/ws/host",
-		Password:     password,
-		Source:       capture.TestPattern{Width: 64, Height: 48},
-		Input:        input,
-		FPS:          30,
-		OnRegistered: func(id string) { ids <- id },
-	}
+	a.ServerURL = base + "/ws/host"
+	a.Source = capture.TestPattern{Width: 64, Height: 48}
+	a.FPS = 30
+	a.OnRegistered = func(id string) { ids <- id }
 	go a.Run(ctx)
 	select {
 	case id := <-ids:
@@ -170,6 +198,47 @@ func TestHostWaitsForAcks(t *testing.T) {
 	for range 10 {
 		u := readUpdate(t, c)
 		sendJSON(t, c, protocol.Message{Type: protocol.TypeAck, Seq: u.Seq})
+	}
+}
+
+func TestClipboardIsSharedBothWays(t *testing.T) {
+	clip := &fakeClipboard{}
+	base, id := startHostWith(t, &host.Agent{Password: "secret", Clipboard: clip})
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeClipboard, Text: "from viewer"})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if text, _ := clip.ReadText(); text == "from viewer" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("host clipboard was not set")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	clip.WriteText("from host")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		typ, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal("viewer did not get the host clipboard:", err)
+		}
+		if typ != websocket.MessageText {
+			continue // screen update
+		}
+		var m protocol.Message
+		json.Unmarshal(data, &m)
+		if m.Type != protocol.TypeClipboard {
+			continue
+		}
+		if m.Text != "from host" {
+			t.Fatalf("viewer got clipboard %q, want the host's (and no echo of its own)", m.Text)
+		}
+		return
 	}
 }
 

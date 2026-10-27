@@ -37,6 +37,8 @@ const (
 	// rather than allowed to stall the host.
 	frameBuffer = 16
 	maxMessage  = 16 << 20
+	// maxViewerMessage leaves room for clipboard text.
+	maxViewerMessage = 1 << 20
 )
 
 // Server is the relay. The zero value is not usable; call New.
@@ -64,8 +66,13 @@ type host struct {
 type viewer struct {
 	id      string
 	conn    *websocket.Conn
-	frames  chan []byte
+	out     chan outgoing
 	tooSlow bool // guarded by host.mu
+}
+
+type outgoing struct {
+	typ  websocket.MessageType
+	data []byte
 }
 
 // New returns an empty relay server.
@@ -123,14 +130,18 @@ func (s *Server) serveHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if typ == websocket.MessageBinary {
-			h.broadcast(data)
+			h.broadcast(outgoing{typ, data})
 			continue
 		}
 		var m protocol.Message
 		if json.Unmarshal(data, &m) != nil {
 			continue
 		}
-		if m.Type == protocol.TypeAuthResult {
+		switch m.Type {
+		case protocol.TypeClipboard:
+			out, _ := json.Marshal(protocol.Message{Type: protocol.TypeClipboard, Text: m.Text})
+			h.broadcast(outgoing{websocket.MessageText, out})
+		case protocol.TypeAuthResult:
 			h.mu.Lock()
 			ch := h.pending[m.Viewer]
 			delete(h.pending, m.Viewer)
@@ -147,7 +158,7 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	conn.SetReadLimit(1 << 16)
+	conn.SetReadLimit(maxViewerMessage)
 	defer conn.CloseNow()
 	ctx := r.Context()
 
@@ -173,9 +184,9 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v := &viewer{
-		id:     strconv.FormatUint(s.nextID.Add(1), 10),
-		conn:   conn,
-		frames: make(chan []byte, frameBuffer),
+		id:   strconv.FormatUint(s.nextID.Add(1), 10),
+		conn: conn,
+		out:  make(chan outgoing, frameBuffer),
 	}
 	ok, err := h.authenticate(ctx, v.id, req.Password)
 	if err != nil {
@@ -334,9 +345,9 @@ func (h *host) removeViewer(v *viewer) {
 	}
 }
 
-// broadcast queues an update for every viewer. A viewer whose queue is full
+// broadcast queues a message for every viewer. A viewer whose queue is full
 // has stopped keeping up and is disconnected.
-func (h *host) broadcast(frame []byte) {
+func (h *host) broadcast(msg outgoing) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, v := range h.viewers {
@@ -344,7 +355,7 @@ func (h *host) broadcast(frame []byte) {
 			continue
 		}
 		select {
-		case v.frames <- frame:
+		case v.out <- msg:
 		default:
 			v.tooSlow = true
 			log.Printf("viewer %s of host %s is too slow, disconnecting", v.id, h.id)
@@ -356,8 +367,8 @@ func (h *host) broadcast(frame []byte) {
 func (v *viewer) pump(ctx context.Context) {
 	for {
 		select {
-		case f := <-v.frames:
-			if err := v.conn.Write(ctx, websocket.MessageBinary, f); err != nil {
+		case m := <-v.out:
+			if err := v.conn.Write(ctx, m.typ, m.data); err != nil {
 				return
 			}
 		case <-ctx.Done():
