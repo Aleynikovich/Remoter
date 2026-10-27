@@ -1,0 +1,55 @@
+name: Android
+# Builds the Android viewer and publishes it to one rolling prerelease,
+# android-latest, whose title carries the build number the app's update check
+# compares against. It never carries host binaries, so the Windows host's
+# updater (which installs the newest dev-N with remoter-windows-amd64.exe)
+# ignores it, and replacing it each time keeps the release list short.
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths: ["android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["android/**", ".github/workflows/android.yml"]
+permissions:
+  contents: write
+concurrency:
+  group: android-${{ github.event_name }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test and build
+        env:
+          REMOTER_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          ./gradlew --no-daemon testReleaseUnitTest assembleRelease
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk dist/remoter-android.apk
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remoter-android
+          path: android/dist/remoter-android.apk
+      - name: Publish android-latest
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD: android-dev-${{ github.run_number }}
+        run: |
+          gh release delete android-latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create android-latest dist/remoter-android.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Android viewer $BUILD" \
+            --notes "Android viewer $BUILD from ${GITHUB_REF_NAME} (${GITHUB_SHA::7}). Install: https://github.com/$GITHUB_REPOSITORY/releases/download/android-latest/remoter-android.apk"
