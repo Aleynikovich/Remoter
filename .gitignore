@@ -1,4 +1,3 @@
-/remoter-server
-/remoter-host
+/remoter
 *.exe
 dist/

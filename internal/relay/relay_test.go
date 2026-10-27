@@ -372,3 +372,14 @@ func TestHeldInputReleasedWhenViewerLeaves(t *testing.T) {
 		t.Fatal("host did not release input after the viewer left")
 	}
 }
+
+func TestHostKeepsIDAcrossRestart(t *testing.T) {
+	_, id := startHostWith(t, &host.Agent{Password: "pw", ID: "123456789"})
+	if id != "123456789" {
+		t.Fatalf("got ID %s, want the requested one", id)
+	}
+	_, id = startHostWith(t, &host.Agent{Password: "pw", ID: "42"})
+	if len(id) != 9 || id == "42" {
+		t.Fatalf("invalid requested ID accepted: %s", id)
+	}
+}

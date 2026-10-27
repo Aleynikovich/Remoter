@@ -11,16 +11,16 @@ screen, let someone control it, and connect with a 9-digit ID and a password.
 
 ```
  ┌──────────────┐   wss    ┌──────────────────┐   wss    ┌──────────────┐
- │ remoter-host │ ───────▶ │  remoter-server  │ ◀─────── │ web viewer   │
+ │ remoter host │ ───────▶ │  remoter relay   │ ◀─────── │ web viewer   │
  │ (shared PC)  │ ◀─────── │  ID + relay      │ ───────▶ │ (browser)    │
  └──────────────┘  input   └──────────────────┘  frames  └──────────────┘
 ```
 
-* **remoter-server** gives each host a 9-digit session ID, forwards a viewer's
+* **the relay** gives each host a 9-digit session ID, forwards a viewer's
   password attempt to the host, and relays traffic once the host accepts it.
   It also serves the web viewer. Repeated wrong passwords lock an ID for a
   minute.
-* **remoter-host** runs on the computer being shared. It prints its ID and a
+* **the host** runs on the computer being shared. It prints its ID and a
   password (`root` by default), checks passwords itself (the server only passes them
   through), captures the screen while someone is watching, and receives mouse
   and keyboard events. It compares each capture with the last one in 64×64
@@ -38,11 +38,15 @@ The protocol is in [`internal/protocol`](internal/protocol/protocol.go).
 Needs Go 1.24+.
 
 ```sh
-go run ./cmd/remoter-server            # listens on :8080
-go run ./cmd/remoter-host              # shares display 0, prints ID + password
+go run ./cmd/remoter                   # relay on :8080 + shares display 0
 # or, on a machine without a display:
-go run ./cmd/remoter-host -test-pattern
+go run ./cmd/remoter -test-pattern
 ```
+
+One program runs both the relay (with the web viewer) and the host. To run
+them on different machines use `remoter -mode server` on the relay and
+`remoter -mode host -server ws://<relay>:8080/ws/host` on the shared
+computer.
 
 Open http://localhost:8080, enter the ID and password.
 
@@ -51,12 +55,26 @@ The host's password is `root` unless you pass `-password` (use
 server, the viewer needs just the password; the partner ID is only asked for
 when several are connected.
 
-Host flags: `-server`, `-password`, `-fps`, `-quality`, `-display`,
-`-view-only`, `-no-clipboard`, `-test-pattern`.
+Flags: `-mode`, `-addr`, `-server`, `-password`, `-fps`, `-quality`,
+`-display`, `-view-only`, `-no-clipboard`, `-test-pattern`, `-no-update`,
+`-update-interval`, `-version`.
+
+### Updates
+
+Release builds (from the [releases page](https://github.com/aleynikovich/remoter/releases))
+update themselves. Every two minutes they look for a newer release that has
+a `remoter-<os>-<arch>` file, download it next to the running program, check
+its size and SHA-256 and that it starts, swap it in (the previous version is
+kept as `remoter.old.exe` until the next start), and restart in the same
+window. The host keeps its ID across the restart and open viewers reconnect
+on their own. Every push to `main` or a work branch publishes a dev release,
+so updates arrive within minutes of a change. `-no-update` turns this off;
+builds made with plain `go build` never update.
 
 ### Controlling a Windows computer
 
-Run `remoter-server` and `remoter-host` on the Windows machine, then open
+Download `remoter-windows-amd64.exe` from the latest release and run it on
+the Windows machine, then open
 `http://<windows-ip>:8080` from the other computer. Click into the screen to
 give it keyboard focus.
 
@@ -120,8 +138,8 @@ go test -race ./...
 
 | Path | What |
 | --- | --- |
-| `cmd/remoter-server` | relay + web viewer binary |
-| `cmd/remoter-host` | host agent binary |
+| `cmd/remoter` | the binary: relay + web viewer and/or host agent |
+| `internal/update` | self-update from GitHub releases |
 | `internal/relay` | rendezvous, auth forwarding, frame/input relay |
 | `internal/host` | host agent session logic |
 | `internal/capture` | screen and test-pattern sources (Windows: reusable GDI capture) |

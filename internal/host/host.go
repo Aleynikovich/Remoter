@@ -81,6 +81,10 @@ type Agent struct {
 	// Monitors, if set, lets viewers switch between displays.
 	Monitors Monitors
 
+	// ID is the session ID to ask the relay for, so viewers can reconnect
+	// to the same ID after a restart. Run sets it to the ID it got.
+	ID string
+
 	// OnRegistered is called with the session ID once the relay assigns it.
 	OnRegistered func(id string)
 
@@ -219,7 +223,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer conn.CloseNow()
 	conn.SetReadLimit(1 << 20)
 
-	if err := send(ctx, conn, protocol.Message{Type: protocol.TypeRegister}); err != nil {
+	if err := send(ctx, conn, protocol.Message{Type: protocol.TypeRegister, ID: a.ID}); err != nil {
 		return err
 	}
 	_, data, err := conn.Read(ctx)
@@ -230,6 +234,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := json.Unmarshal(data, &reg); err != nil || reg.Type != protocol.TypeRegistered {
 		return fmt.Errorf("unexpected reply to register: %s", data)
 	}
+	a.ID = reg.ID
 	if a.OnRegistered != nil {
 		a.OnRegistered(reg.ID)
 	}
