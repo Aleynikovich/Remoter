@@ -198,7 +198,13 @@ func startServer(ctx context.Context, addr string, stop func()) (*http.Server, e
 		fmt.Fprint(w, version())
 	})
 	mux.Handle("/shutdown", shutdownHandler(stop))
-	mux.Handle("/", http.FileServerFS(static))
+	// Embedded files carry no dates, so tell browsers to check every time;
+	// otherwise a viewer could keep running an old viewer.js after an update.
+	files := http.FileServerFS(static)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		files.ServeHTTP(w, r)
+	})
 
 	// If the port is taken, by the previous process right after an update or
 	// by an older Remoter still running, wait for it. That lets a new copy be

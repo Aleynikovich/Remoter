@@ -98,9 +98,9 @@ type Agent struct {
 	// used while every viewer can decode H.264, and JPEG tiles otherwise.
 	// An error turns video off for the rest of the session.
 	NewVideo func(w, h int) (VideoEncoder, error)
-	// VideoReady, if set, reports whether NewVideo can be called yet (the
-	// codec may still be downloading).
-	VideoReady func() bool
+	// VideoStatus, if set, says why NewVideo cannot be called yet (the
+	// codec may still be downloading, or failed to load). Empty means ready.
+	VideoStatus func() string
 
 	// ID is the session ID to ask the relay for, so viewers can reconnect
 	// to the same ID after a restart. Run sets it to the ID it got.
@@ -110,6 +110,9 @@ type Agent struct {
 	OnRegistered func(id string)
 
 	flow flow
+
+	videoMu  sync.Mutex
+	videoErr string // why the encoder was turned off for the session
 
 	clipMu  sync.Mutex
 	clipSeq uint32 // clipboard sequence number last sent or written
@@ -315,6 +318,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.sendDisplays(ctx, conn); err != nil {
 				return err
 			}
+			if err := send(ctx, conn, protocol.Message{Type: protocol.TypeVideo, Text: a.whyNoVideo()}); err != nil {
+				return err
+			}
 		case protocol.TypeSelectDisplay:
 			if a.Monitors == nil {
 				continue
@@ -352,8 +358,11 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 	defer st.closeVideo()
 	interval := time.Second / time.Duration(a.FPS)
 	var cursor string
+	var tm timings
 	next := time.Now()
 	for {
+		tm.report(st.usingVideo)
+		waitStart := time.Now()
 		wait := time.Until(next)
 		for wait > 0 || !a.flow.ready() {
 			if wait <= 0 {
@@ -371,7 +380,16 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 		}
 		next = time.Now().Add(interval)
 
+		t0 := time.Now()
+		tm.wait += t0.Sub(waitStart)
 		img, err := a.Source.Capture()
+		t1 := time.Now()
+		tm.capture += t1.Sub(t0)
+		if err == nil && img.Bounds().Empty() {
+			// Seen right after connecting to an X server; it would turn
+			// video off for good.
+			err = errors.New("empty capture")
+		}
 		if err != nil {
 			log.Printf("capture: %v", err)
 			continue
@@ -386,6 +404,9 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 			}
 		}
 		msg, err := st.encode(img, seq, full)
+		t2 := time.Now()
+		tm.encode += t2.Sub(t1)
+		tm.loops++
 		if err != nil {
 			return err
 		}
@@ -395,8 +416,42 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 		if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
 			return err
 		}
+		tm.send += time.Since(t2)
+		tm.frames++
+		tm.bytes += len(msg)
 		a.flow.sent(seq)
 	}
+}
+
+// timings adds up where the stream loop spends its time and logs it every
+// timingsEvery while frames are going out, to tell a slow capture or encoder
+// from a slow network or viewer (time spent waiting for acks).
+type timings struct {
+	start                       time.Time
+	wait, capture, encode, send time.Duration
+	loops, frames, bytes        int
+}
+
+const timingsEvery = 10 * time.Second
+
+func (t *timings) report(video bool) {
+	el := time.Since(t.start)
+	if el < timingsEvery {
+		return
+	}
+	if t.frames > 0 {
+		mode := "JPEG"
+		if video {
+			mode = "H.264"
+		}
+		per := func(d time.Duration) string {
+			return (d / time.Duration(max(t.loops, 1))).Round(100 * time.Microsecond).String()
+		}
+		log.Printf("stream %s: %.1f fps, %.1f Mbit/s; per capture: capture %s, encode %s, send %s; waited %.0f%% of the time for viewers or the frame interval",
+			mode, float64(t.frames)/el.Seconds(), float64(t.bytes)*8/1e6/el.Seconds(),
+			per(t.capture), per(t.encode), per(t.send), 100*t.wait.Seconds()/el.Seconds())
+	}
+	*t = timings{start: time.Now()}
 }
 
 // streamer picks between H.264 video and JPEG tiles for each capture.
@@ -406,7 +461,6 @@ type streamer struct {
 	buf   []byte
 
 	video      VideoEncoder
-	videoOff   bool // the encoder failed; stay on tiles
 	usingVideo bool
 	prev       []byte // last capture, to skip encoding a still screen
 	changed    time.Time
@@ -414,8 +468,7 @@ type streamer struct {
 
 func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error) {
 	img := toRGBA(src)
-	wantVideo := s.a.NewVideo != nil && !s.videoOff &&
-		(s.a.VideoReady == nil || s.a.VideoReady()) && s.a.flow.allVideo()
+	wantVideo := s.a.whyNoVideo() == ""
 	if wantVideo != s.usingVideo {
 		s.usingVideo = wantVideo
 		full = true // the other format starts from nothing
@@ -443,7 +496,7 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 		v, err := s.a.NewVideo(w, h)
 		if err != nil {
 			log.Printf("H.264 unavailable, sending JPEG: %v", err)
-			s.videoOff = true
+			s.a.turnOffVideo(err)
 			return s.encode(img, seq, true)
 		}
 		s.video = v
@@ -461,7 +514,7 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 	data, key, err := s.video.Encode(img, full)
 	if err != nil {
 		log.Printf("H.264 failed, sending JPEG: %v", err)
-		s.videoOff = true
+		s.a.turnOffVideo(err)
 		s.closeVideo()
 		return s.encode(img, seq, true)
 	}
@@ -518,6 +571,36 @@ func copyRGBA(dst []byte, img *image.RGBA) []byte {
 		copy(dst[y*w:], img.Pix[y*img.Stride:y*img.Stride+w])
 	}
 	return dst
+}
+
+// whyNoVideo says why the host sends JPEG tiles instead of H.264, or ""
+// when it sends video.
+func (a *Agent) whyNoVideo() string {
+	if a.NewVideo == nil {
+		return "H.264 is turned off on the host"
+	}
+	a.videoMu.Lock()
+	why := a.videoErr
+	a.videoMu.Unlock()
+	if why != "" {
+		return why
+	}
+	if a.VideoStatus != nil {
+		if why := a.VideoStatus(); why != "" {
+			return why
+		}
+	}
+	if !a.flow.allVideo() {
+		return "a viewer's browser cannot decode H.264"
+	}
+	return ""
+}
+
+// turnOffVideo stays on JPEG tiles for the rest of the session.
+func (a *Agent) turnOffVideo(err error) {
+	a.videoMu.Lock()
+	a.videoErr = "H.264 failed on the host: " + err.Error()
+	a.videoMu.Unlock()
 }
 
 // sendDisplays tells viewers which displays they can switch between.

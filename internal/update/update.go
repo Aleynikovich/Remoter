@@ -101,11 +101,16 @@ func (c *Checker) Latest(ctx context.Context) (*Release, *Asset, error) {
 		if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
 			return nil, nil, fmt.Errorf("read releases: %w", err)
 		}
-		// GitHub lists the newest release first.
+		// GitHub's order is not reliable (dev-16 can be listed after dev-2),
+		// so take the highest dev number, or the first listed release when
+		// none are dev builds.
 		for i := range releases {
-			if !releases[i].Draft && releases[i].asset(c.Asset) != nil {
-				newest = &releases[i]
-				break
+			r := &releases[i]
+			if r.Draft || r.asset(c.Asset) == nil {
+				continue
+			}
+			if newest == nil || older(newest.Tag, r.Tag) {
+				newest = r
 			}
 		}
 		c.etag, c.cached = resp.Header.Get("ETag"), newest

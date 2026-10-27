@@ -85,16 +85,18 @@ func newAgent(o hostOptions) *host.Agent {
 	if !o.noVideo {
 		// Loading may download the codec, so do it in the background and
 		// send JPEG until it is ready.
-		var ok atomic.Bool
+		var status atomic.Value
+		status.Store("the host is still loading the H.264 codec")
 		go func() {
 			if err := prepareVideo(); err != nil {
 				log.Printf("H.264 video off, sending JPEG: %v", err)
+				status.Store("the host could not load H.264: " + err.Error())
 				return
 			}
 			log.Print("H.264 video ready")
-			ok.Store(true)
+			status.Store("")
 		}()
-		a.VideoReady = ok.Load
+		a.VideoStatus = func() string { return status.Load().(string) }
 		a.NewVideo = func(w, h int) (host.VideoEncoder, error) {
 			return h264.NewEncoder(w, h, o.kbps, o.fps)
 		}
