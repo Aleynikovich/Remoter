@@ -18,3 +18,15 @@ jobs:
       - run: go test ./...
       - if: runner.os == 'Linux'
         run: go test -race ./...
+      - if: runner.os == 'Windows'
+        name: Background launch smoke test
+        shell: pwsh
+        run: |
+          go build -o remoter.exe ./cmd/remoter
+          "" | ./remoter.exe -test-pattern -addr :18080
+          (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18080/version).Content
+          "" | ./remoter.exe -test-pattern -addr :18080 | Select-String "already running"
+          if (-not $?) { exit 1 }
+          ./remoter.exe -stop -addr :18080
+          Start-Sleep 1
+          try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18080/version; exit 1 } catch { "stopped" }
