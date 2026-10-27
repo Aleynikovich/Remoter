@@ -1,7 +1,11 @@
 name: Release
+# Version tags (v1.2.3) publish a release. Pushes to main and to work
+# branches publish a numbered dev prerelease so builds can be tried before a
+# version is cut.
 on:
   push:
     tags: ["v*"]
+    branches: [main, "claude/**"]
 permissions:
   contents: write
 jobs:
@@ -29,5 +33,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Dev build {0} ({1})', github.run_number, github.ref_name) }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ github.ref_type != 'tag' || contains(github.ref_name, '-') }}
           generate_release_notes: true
