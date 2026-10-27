@@ -40,6 +40,15 @@ type hostOptions struct {
 
 func newAgent(o hostOptions) *host.Agent {
 	screen := capture.NewScreen(o.display)
+	if runtime.GOOS == "windows" && !o.test {
+		go func() {
+			if err := childSelfTest("-capture-selftest"); err != nil {
+				log.Printf("fast screen capture off, using GDI: %v", err)
+				return
+			}
+			capture.EnableDXGI()
+		}()
+	}
 	var src capture.Source = screen
 	var in input.Handler = input.Log{}
 	var mons host.Monitors
@@ -116,18 +125,24 @@ func prepareVideo() error {
 	if err := h264.Load(); err != nil {
 		return err
 	}
+	return childSelfTest("-h264-selftest")
+}
+
+// childSelfTest runs this program with flag in a child process, which exits
+// with an error (or crashes) when the feature does not work here.
+func childSelfTest(flag string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "-h264-selftest")
+	cmd := exec.CommandContext(ctx, exe, flag)
 	update.HideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		first, _, _ := bytes.Cut(bytes.TrimSpace(out), []byte("\n"))
-		return fmt.Errorf("codec self-test failed: %v: %s", err, first)
+		return fmt.Errorf("self-test failed: %v: %s", err, first)
 	}
 	return nil
 }

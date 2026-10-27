@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/aleynikovich/remoter/internal/capture"
 	"github.com/aleynikovich/remoter/internal/diag"
 	"github.com/aleynikovich/remoter/internal/h264"
 	"github.com/aleynikovich/remoter/internal/relay"
@@ -51,8 +52,15 @@ func main() {
 	stopFlag := flag.Bool("stop", false, "stop the Remoter running on this computer")
 	noAutostart := flag.Bool("no-autostart", false, "Windows: do not start Remoter when you log in")
 	selfTest := flag.Bool("h264-selftest", false, "check that the H.264 codec works, then exit (used internally)")
+	captureTest := flag.Bool("capture-selftest", false, "check that fast screen capture works, then exit (used internally)")
 	flag.Parse()
 
+	if *captureTest {
+		if err := capture.SelfTestDXGI(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *selfTest {
 		if err := h264.SelfTest(); err != nil {
 			log.Fatal(err)
