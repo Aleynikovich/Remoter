@@ -168,7 +168,9 @@ away.
   **Ctrl+Alt+Esc** gives keyboard and mouse back; click the picture to hand
   them over again. In Hyprland, binds marked `bindp` still stay local.
 * **Ctrl+Alt+Enter** toggles full screen, **Ctrl+Alt+PageDown/PageUp**
-  switches between the remote computer's monitors.
+  switches between the remote computer's monitors, and **Ctrl+Alt+D** copies
+  a diagnostics report (the viewer's frame, decode and draw times for the
+  last minute, then the host's settings and log) to the clipboard.
 * The clipboard follows you both ways: copy on the remote computer and paste
   locally, or copy locally and press Ctrl+V in the remote one.
 * `-jpeg` asks for JPEG tiles instead of video, `-fullscreen` starts full

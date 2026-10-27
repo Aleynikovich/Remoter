@@ -43,6 +43,7 @@ const (
 	scPageDown = 78
 	scKPEnter  = 88
 	scV        = 25
+	scD        = 7
 )
 
 // SDL's system cursors for the CSS cursor names the host sends.
@@ -108,6 +109,10 @@ type app struct {
 
 	frames, bytes int
 	statsAt       time.Time
+	times         timings
+	history       []statSecond // the last minute, for diagnostics
+	diagAsked     time.Time    // when a diagnostics report was asked for; zero if not
+	out           image.Point  // renderer output size
 	title         string
 	dirty         bool
 }
@@ -592,7 +597,9 @@ func (a *app) videoFrame(data []byte) bool {
 		return false
 	}
 	a.needKey = false
+	start := time.Now()
 	got, err := a.dec.decode(v.Frame)
+	a.times.addDecode(time.Since(start))
 	if err != nil {
 		// Usually a frame lost its reference (we joined mid-stream); a key
 		// frame repairs it.
@@ -682,6 +689,10 @@ func (a *app) hostMessage(m protocol.Message) {
 		a.setCursor(m.Cursor)
 	case protocol.TypeDisplays:
 		a.displays, a.display = m.Count, m.Display
+	case protocol.TypeDiagnostics:
+		if !a.diagAsked.IsZero() { // otherwise another viewer asked
+			a.copyDiagnostics(m.Text)
+		}
 	case protocol.TypeVideo:
 		a.noVideo = m.Text
 	case protocol.TypeClipboard:
@@ -792,6 +803,12 @@ func (a *app) shortcut(sc int32) bool {
 			sdl.SetWindowFullscreen(a.win, 0)
 		} else {
 			sdl.SetWindowFullscreen(a.win, sdlWindowFullscreenDesktop)
+		}
+	case scD:
+		if a.connected {
+			a.diagAsked = time.Now()
+			a.client.Send(protocol.Message{Type: protocol.TypeDiagnostics})
+			a.showNotice("Collecting diagnostics…", 5*time.Second)
 		}
 	case scPageDown, scPageUp:
 		if a.displays < 2 || !a.connected {
@@ -905,6 +922,9 @@ func (a *app) tick() {
 	if a.client == nil && !a.manual && now.Sub(a.lastScan) > 10*time.Second {
 		a.scan()
 	}
+	if !a.diagAsked.IsZero() && now.Sub(a.diagAsked) > 5*time.Second {
+		a.copyDiagnostics("(no answer: the host's build is too old to send diagnostics)\n")
+	}
 	if a.notice != "" && now.After(a.noticeUntil) {
 		a.showNotice("", 0)
 	}
@@ -925,14 +945,26 @@ func (a *app) tick() {
 		secs := now.Sub(a.statsAt).Seconds()
 		a.setTitle(fmt.Sprintf("Remoter · %s · %.0f fps · %.1f Mbit/s · %s", a.server,
 			float64(a.frames)/secs, float64(a.bytes)*8/1e6/secs, codec))
+		t := a.times
+		a.history = append(a.history, statSecond{
+			at: now, frames: a.frames, bytes: a.bytes, codec: codec,
+			decodes: t.decodes, decode: t.decode, decMax: t.decMax,
+			renders: t.renders, render: t.render, rendMax: t.rendMax,
+		})
+		if len(a.history) > 60 {
+			a.history = a.history[len(a.history)-60:]
+		}
 	}
-	a.frames, a.bytes, a.statsAt = 0, 0, now
+	a.frames, a.bytes, a.statsAt, a.times = 0, 0, now, timings{}
 }
 
 func (a *app) render() {
+	start := time.Now()
+	defer func() { a.times.addRender(time.Since(start)) }()
 	a.dirty = false
 	var ow, oh, ww, wh int32
 	sdl.GetRendererOutputSize(a.ren, &ow, &oh)
+	a.out = image.Pt(int(ow), int(oh))
 	sdl.GetWindowSize(a.win, &ww, &wh)
 	out := image.Pt(int(ow), int(oh))
 	if ww > 0 {
