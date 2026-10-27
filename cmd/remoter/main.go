@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"time"
 
 	"github.com/aleynikovich/remoter/internal/capture"
@@ -53,6 +54,7 @@ func main() {
 	stopFlag := flag.Bool("stop", false, "stop the Remoter running on this computer")
 	noAutostart := flag.Bool("no-autostart", false, "Windows: do not start Remoter when you log in")
 	selfTest := flag.Bool("h264-selftest", false, "check that the H.264 codec works, then exit (used internally)")
+	noElevate := flag.Bool("no-elevate", false, "Windows: do not restart with administrator rights even where that needs no prompt")
 	captureTest := flag.Bool("capture-selftest", false, "check that fast screen capture works, then exit (used internally)")
 	flag.Parse()
 
@@ -101,13 +103,22 @@ func main() {
 		return
 	}
 	// The flags the user chose, kept for restarts and for starting at login.
-	userArgs := withoutFlags(os.Args[1:], "background", "console")
+	userArgs := withoutFlags(os.Args[1:], "background", "console", "no-elevate")
 	if backgroundSupported && !*console && !*background {
 		if launch(*addr, runServer, ho.password, userArgs) {
 			return
 		}
 		fmt.Println("Running in this window instead.")
 		*console = true
+	}
+	// Without administrator rights Windows silently drops input sent to
+	// admin windows. Where that takes no prompt, restart with them.
+	if *background && !*noElevate && runAgent && !isAdmin() && canElevateSilently() {
+		if exe, err := os.Executable(); err == nil {
+			if err := startElevated(exe, append(os.Args[1:], "-no-elevate")); err == nil {
+				return
+			}
+		}
 	}
 	var logTo io.Writer = os.Stderr
 	if *background {
@@ -118,6 +129,9 @@ func main() {
 	// Viewers can ask for the recent log, so nobody has to dig for the file.
 	log.SetOutput(io.MultiWriter(logTo, diag.Log))
 	log.Printf("Remoter %s", version())
+	if runtime.GOOS == "windows" && !isAdmin() {
+		log.Print("running without administrator rights: Windows blocks input to programs running as administrator")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
