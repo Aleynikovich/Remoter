@@ -4,6 +4,7 @@ package host
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -101,6 +102,10 @@ type Agent struct {
 	// VideoStatus, if set, says why NewVideo cannot be called yet (the
 	// codec may still be downloading, or failed to load). Empty means ready.
 	VideoStatus func() string
+
+	// Diagnostics, if set, returns the host's settings and recent log for
+	// viewers that ask for them.
+	Diagnostics func() string
 
 	// ID is the session ID to ask the relay for, so viewers can reconnect
 	// to the same ID after a restart. Run sets it to the ID it got.
@@ -333,6 +338,14 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.sendDisplays(ctx, conn); err != nil {
 				return err
 			}
+		case protocol.TypeDiagnostics:
+			text := "video: " + cmp.Or(a.whyNoVideo(), "H.264 on")
+			if a.Diagnostics != nil {
+				text = a.Diagnostics() + "\n" + text
+			}
+			if err := send(ctx, conn, protocol.Message{Type: protocol.TypeDiagnostics, Text: text}); err != nil {
+				return err
+			}
 		case protocol.TypeAck:
 			a.flow.ack(m.Viewer, m.Seq)
 		case protocol.TypeClipboard:
@@ -352,16 +365,23 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 // stream captures the screen and sends what changed, at most FPS times a
-// second and only as fast as the slowest viewer draws.
+// second and only as fast as the slowest viewer draws. Encoding and sending
+// run in their own goroutine, so the next capture overlaps them.
 func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
-	st := &streamer{a: a, tiles: &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter}}
-	defer st.closeVideo()
+	ctx, cancel := context.WithCancel(ctx)
+	frames := make(chan frame)
+	done := make(chan error, 1)
+	go func() { done <- a.encodeAndSend(ctx, conn, frames) }()
+	defer func() {
+		cancel()
+		close(frames)
+		<-done
+	}()
+
 	interval := time.Second / time.Duration(a.FPS)
 	var cursor string
-	var tm timings
 	next := time.Now()
 	for {
-		tm.report(st.usingVideo)
 		waitStart := time.Now()
 		wait := time.Until(next)
 		for wait > 0 || !a.flow.ready() {
@@ -373,6 +393,9 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
+			case err := <-done:
+				done <- err
+				return err
 			case <-a.flow.wake:
 			case <-time.After(wait):
 			}
@@ -381,10 +404,7 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 		next = time.Now().Add(interval)
 
 		t0 := time.Now()
-		tm.wait += t0.Sub(waitStart)
 		img, err := a.Source.Capture()
-		t1 := time.Now()
-		tm.capture += t1.Sub(t0)
 		if err == nil && img.Bounds().Empty() {
 			// Seen right after connecting to an X server; it would turn
 			// video off for good.
@@ -394,16 +414,50 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 			log.Printf("capture: %v", err)
 			continue
 		}
-		seq, full := a.flow.next()
+		f := frame{img: img, wait: t0.Sub(waitStart), capture: time.Since(t0)}
+		f.seq, f.full = a.flow.next()
 		if a.Cursor != nil {
-			if c := a.Cursor(); c != "" && (c != cursor || full) {
+			if c := a.Cursor(); c != "" && (c != cursor || f.full) {
 				cursor = c
 				if err := send(ctx, conn, protocol.Message{Type: protocol.TypeCursor, Cursor: c}); err != nil {
 					return err
 				}
 			}
 		}
-		msg, err := st.encode(img, seq, full)
+		// Hand the capture over once the previous one is encoded. A
+		// Source may reuse an image after the next Capture call, which
+		// is why this waits instead of capturing again.
+		select {
+		case frames <- f:
+		case err := <-done:
+			done <- err
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// frame is a capture on its way to the encoder.
+type frame struct {
+	img           image.Image
+	seq           uint32
+	full          bool
+	wait, capture time.Duration
+}
+
+// encodeAndSend encodes the captures it is handed and sends them.
+func (a *Agent) encodeAndSend(ctx context.Context, conn *websocket.Conn, frames <-chan frame) error {
+	st := &streamer{a: a, tiles: &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter}}
+	defer st.closeVideo()
+	tm := timings{start: time.Now()}
+	for f := range frames {
+		tm.report(st.usingVideo)
+		tm.size = f.img.Bounds().Size()
+		tm.wait += f.wait
+		tm.capture += f.capture
+		t1 := time.Now()
+		msg, err := st.encode(f.img, f.seq, f.full)
 		t2 := time.Now()
 		tm.encode += t2.Sub(t1)
 		tm.loops++
@@ -419,8 +473,9 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 		tm.send += time.Since(t2)
 		tm.frames++
 		tm.bytes += len(msg)
-		a.flow.sent(seq)
+		a.flow.sent(f.seq)
 	}
+	return nil
 }
 
 // timings adds up where the stream loop spends its time and logs it every
@@ -430,6 +485,7 @@ type timings struct {
 	start                       time.Time
 	wait, capture, encode, send time.Duration
 	loops, frames, bytes        int
+	size                        image.Point
 }
 
 const timingsEvery = 10 * time.Second
@@ -447,8 +503,8 @@ func (t *timings) report(video bool) {
 		per := func(d time.Duration) string {
 			return (d / time.Duration(max(t.loops, 1))).Round(100 * time.Microsecond).String()
 		}
-		log.Printf("stream %s: %.1f fps, %.1f Mbit/s; per capture: capture %s, encode %s, send %s; waited %.0f%% of the time for viewers or the frame interval",
-			mode, float64(t.frames)/el.Seconds(), float64(t.bytes)*8/1e6/el.Seconds(),
+		log.Printf("stream %s %dx%d: %.1f fps, %.1f Mbit/s; per capture: capture %s, encode %s, send %s; waited %.0f%% of the time for viewers or the frame interval",
+			mode, t.size.X, t.size.Y, float64(t.frames)/el.Seconds(), float64(t.bytes)*8/1e6/el.Seconds(),
 			per(t.capture), per(t.encode), per(t.send), 100*t.wait.Seconds()/el.Seconds())
 	}
 	*t = timings{start: time.Now()}

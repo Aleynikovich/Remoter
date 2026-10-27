@@ -13,7 +13,9 @@ import (
 	"github.com/kbinani/screenshot"
 )
 
-// Source produces screen images.
+// Source produces screen images. A source may draw into an image again
+// on the second Capture call after the one that returned it, so a caller
+// can work on one capture while taking the next.
 type Source interface {
 	Capture() (image.Image, error)
 }

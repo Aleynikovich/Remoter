@@ -26,3 +26,6 @@ button.secondary { background: transparent; color: var(--fg); border: 1px solid 
 #screen-wrap.actual { overflow: auto; }
 canvas { flex: 1; min-width: 0; width: 100%; height: 100%; object-fit: contain; outline: none; cursor: default; }
 #screen-wrap.actual canvas { flex: none; margin: auto; object-fit: fill; }
+#diag-dialog { max-width: min(900px, calc(100vw - 32px)); border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); }
+#diag-text { width: 100%; box-sizing: border-box; font: 12px ui-monospace, monospace; background: var(--bg); color: var(--fg); }
+.diag-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
