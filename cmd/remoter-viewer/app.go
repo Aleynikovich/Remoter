@@ -98,6 +98,7 @@ type app struct {
 	cursors  map[string]uintptr
 	clip     string // clipboard text both sides already have
 	displays int
+	noVideo  string // why the host sends JPEG instead of H.264, if it says
 	display  int
 
 	notice      string
@@ -525,7 +526,7 @@ func (a *app) drainClient() {
 		}
 		switch ev.Kind {
 		case viewer.EventConnected:
-			a.connected = true
+			a.connected, a.noVideo = true, ""
 			a.releaseHeld()
 			a.startDecoder()
 			a.client.Refresh(a.dec != nil)
@@ -681,6 +682,8 @@ func (a *app) hostMessage(m protocol.Message) {
 		a.setCursor(m.Cursor)
 	case protocol.TypeDisplays:
 		a.displays, a.display = m.Count, m.Display
+	case protocol.TypeVideo:
+		a.noVideo = m.Text
 	case protocol.TypeClipboard:
 		if m.Text != "" && m.Text != a.clip {
 			a.clip = m.Text
@@ -912,6 +915,12 @@ func (a *app) tick() {
 		codec := "H.264"
 		if a.mode == modeTiles {
 			codec = "JPEG"
+			switch {
+			case a.noVideo != "":
+				codec += " (" + a.noVideo + ")"
+			case a.dec == nil:
+				codec += " (no H.264 decoder here)"
+			}
 		}
 		secs := now.Sub(a.statsAt).Seconds()
 		a.setTitle(fmt.Sprintf("Remoter · %s · %.0f fps · %.1f Mbit/s · %s", a.server,
