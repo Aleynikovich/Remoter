@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
 	"image/jpeg"
 	"net/http/httptest"
 	"strings"
@@ -321,6 +322,56 @@ func TestCursorAndDisplaySwitching(t *testing.T) {
 	sendJSON(t, c, protocol.Message{Type: protocol.TypeSelectDisplay, Display: 1})
 	if m := readText(t, c, protocol.TypeDisplays); m.Display != 1 || mons.Current() != 1 {
 		t.Fatalf("got %+v, want the second display selected", m)
+	}
+}
+
+type fakeVideo struct{ w, h int }
+
+func (v *fakeVideo) Size() (int, int) { return v.w, v.h }
+func (v *fakeVideo) Close()           {}
+func (v *fakeVideo) Encode(_ *image.RGBA, key bool) ([]byte, bool, error) {
+	return []byte{0, 0, 0, 1, 0x65}, key, nil
+}
+
+func TestVideoOnlyForViewersThatDecodeIt(t *testing.T) {
+	base, id := startHostWith(t, &host.Agent{
+		Password: "secret",
+		NewVideo: func(w, h int) (host.VideoEncoder, error) { return &fakeVideo{w &^ 1, h &^ 1}, nil },
+	})
+	read := func(c *websocket.Conn) []byte {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for {
+			typ, data, err := c.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if typ == websocket.MessageBinary {
+				return data
+			}
+		}
+	}
+
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh, Video: true})
+	v, err := stream.ParseVideo(read(c))
+	if err != nil || !v.Key || v.Width != 64 || v.Height != 48 {
+		t.Fatalf("got %+v, %v; want a 64x48 key frame", v, err)
+	}
+
+	// A viewer without H.264 switches the session to JPEG tiles.
+	c2, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c2, protocol.Message{Type: protocol.TypeRefresh})
+	// Video frames sent before the switch may still arrive first.
+	for {
+		data := read(c2)
+		if data[0] == 'V' {
+			continue
+		}
+		if u, err := stream.Parse(data); err != nil || !u.Full() {
+			t.Fatalf("got %+v, %v; want a full JPEG update", u, err)
+		}
+		break
 	}
 }
 

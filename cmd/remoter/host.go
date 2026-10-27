@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"sync/atomic"
 	"time"
 
 	"github.com/kbinani/screenshot"
@@ -12,6 +16,7 @@ import (
 	"github.com/aleynikovich/remoter/internal/capture"
 	"github.com/aleynikovich/remoter/internal/clipboard"
 	"github.com/aleynikovich/remoter/internal/cursor"
+	"github.com/aleynikovich/remoter/internal/h264"
 	"github.com/aleynikovich/remoter/internal/host"
 	"github.com/aleynikovich/remoter/internal/input"
 )
@@ -26,6 +31,8 @@ type hostOptions struct {
 	test        bool
 	viewOnly    bool
 	noClipboard bool
+	noVideo     bool
+	kbps        int
 }
 
 func newAgent(o hostOptions) *host.Agent {
@@ -55,7 +62,7 @@ func newAgent(o hostOptions) *host.Agent {
 	}
 
 	shown := ""
-	return &host.Agent{
+	a := &host.Agent{
 		ServerURL: o.server,
 		Password:  o.password,
 		ID:        o.id,
@@ -74,6 +81,44 @@ func newAgent(o hostOptions) *host.Agent {
 			fmt.Printf("\n  Your ID:   %s %s %s\n  Password:  %s\n\n", id[:3], id[3:6], id[6:], o.password)
 		},
 	}
+	if !o.noVideo {
+		// Loading may download the codec, so do it in the background and
+		// send JPEG until it is ready.
+		var ok atomic.Bool
+		go func() {
+			if err := prepareVideo(); err != nil {
+				log.Printf("H.264 video off, sending JPEG: %v", err)
+				return
+			}
+			log.Print("H.264 video ready")
+			ok.Store(true)
+		}()
+		a.VideoReady = ok.Load
+		a.NewVideo = func(w, h int) (host.VideoEncoder, error) {
+			return h264.NewEncoder(w, h, o.kbps, o.fps)
+		}
+	}
+	return a
+}
+
+// prepareVideo loads the H.264 codec and tries it in a child process first,
+// so a codec that does not work here cannot take the host down with it.
+func prepareVideo() error {
+	if err := h264.Load(); err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, exe, "-h264-selftest").CombinedOutput()
+	if err != nil {
+		first, _, _ := bytes.Cut(bytes.TrimSpace(out), []byte("\n"))
+		return fmt.Errorf("codec self-test failed: %v: %s", err, first)
+	}
+	return nil
 }
 
 // runHost keeps the agent connected to the relay until ctx ends, so the

@@ -3,12 +3,15 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/draw"
 	"log"
 	"math/big"
 	"sync"
@@ -33,6 +36,9 @@ const (
 	// refineAfter is how long a tile must stay still before it is resent
 	// at high quality.
 	refineAfter = 300 * time.Millisecond
+	// videoSettle is how long video keeps encoding after the screen stops
+	// changing, so the picture sharpens to full quality before going quiet.
+	videoSettle = time.Second
 	// clipboardPoll is how often the host clipboard is checked for changes.
 	clipboardPoll = 250 * time.Millisecond
 )
@@ -45,6 +51,14 @@ type InputHandler interface {
 // releaser is implemented by input handlers that track held keys and buttons.
 type releaser interface {
 	ReleaseAll(viewer string)
+}
+
+// VideoEncoder compresses captures into H.264 frames (Annex B). Encode
+// returns nil data when the encoder drops the frame.
+type VideoEncoder interface {
+	Size() (w, h int)
+	Encode(img *image.RGBA, key bool) (data []byte, isKey bool, err error)
+	Close()
 }
 
 // Monitors switches the shared display.
@@ -80,6 +94,13 @@ type Agent struct {
 	Cursor func() string
 	// Monitors, if set, lets viewers switch between displays.
 	Monitors Monitors
+	// NewVideo, if set, starts an H.264 encoder for w×h captures. It is
+	// used while every viewer can decode H.264, and JPEG tiles otherwise.
+	// An error turns video off for the rest of the session.
+	NewVideo func(w, h int) (VideoEncoder, error)
+	// VideoReady, if set, reports whether NewVideo can be called yet (the
+	// codec may still be downloading).
+	VideoReady func() bool
 
 	// ID is the session ID to ask the relay for, so viewers can reconnect
 	// to the same ID after a restart. Run sets it to the ID it got.
@@ -106,6 +127,7 @@ type flow struct {
 type viewerState struct {
 	acked   uint32
 	lastAck time.Time
+	video   bool
 }
 
 func (f *flow) poke() {
@@ -116,9 +138,9 @@ func (f *flow) poke() {
 }
 
 // join starts streaming to a viewer, beginning with a full update.
-func (f *flow) join(viewer string) {
+func (f *flow) join(viewer string, video bool) {
 	f.mu.Lock()
-	f.viewers[viewer] = &viewerState{acked: f.seq, lastAck: time.Now()}
+	f.viewers[viewer] = &viewerState{acked: f.seq, lastAck: time.Now(), video: video}
 	f.full = true
 	f.mu.Unlock()
 	f.poke()
@@ -146,6 +168,18 @@ func (f *flow) ack(viewer string, seq uint32) {
 	}
 	f.mu.Unlock()
 	f.poke()
+}
+
+// allVideo reports whether every viewer can decode H.264.
+func (f *flow) allVideo() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, v := range f.viewers {
+		if !v.video {
+			return false
+		}
+	}
+	return len(f.viewers) > 0
 }
 
 // watched reports whether any viewer is streaming.
@@ -277,7 +311,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				return err
 			}
 		case protocol.TypeRefresh:
-			a.flow.join(m.Viewer)
+			a.flow.join(m.Viewer, m.Video)
 			if err := a.sendDisplays(ctx, conn); err != nil {
 				return err
 			}
@@ -314,9 +348,9 @@ func (a *Agent) Run(ctx context.Context) error {
 // stream captures the screen and sends what changed, at most FPS times a
 // second and only as fast as the slowest viewer draws.
 func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
-	enc := &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter}
+	st := &streamer{a: a, tiles: &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter}}
+	defer st.closeVideo()
 	interval := time.Second / time.Duration(a.FPS)
-	var buf []byte
 	var cursor string
 	next := time.Now()
 	for {
@@ -351,20 +385,139 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 				}
 			}
 		}
-		u, err := enc.Encode(img, full, time.Now())
+		msg, err := st.encode(img, seq, full)
 		if err != nil {
 			return err
 		}
-		if u == nil {
+		if msg == nil {
 			continue
 		}
-		u.Seq = seq
-		buf = u.Marshal(buf)
-		if err := conn.Write(ctx, websocket.MessageBinary, buf); err != nil {
+		if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
 			return err
 		}
 		a.flow.sent(seq)
 	}
+}
+
+// streamer picks between H.264 video and JPEG tiles for each capture.
+type streamer struct {
+	a     *Agent
+	tiles *stream.Encoder
+	buf   []byte
+
+	video      VideoEncoder
+	videoOff   bool // the encoder failed; stay on tiles
+	usingVideo bool
+	prev       []byte // last capture, to skip encoding a still screen
+	changed    time.Time
+}
+
+func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error) {
+	img := toRGBA(src)
+	wantVideo := s.a.NewVideo != nil && !s.videoOff &&
+		(s.a.VideoReady == nil || s.a.VideoReady()) && s.a.flow.allVideo()
+	if wantVideo != s.usingVideo {
+		s.usingVideo = wantVideo
+		full = true // the other format starts from nothing
+		if !wantVideo {
+			s.closeVideo()
+		}
+	}
+	if !wantVideo {
+		u, err := s.tiles.Encode(img, full, time.Now())
+		if u == nil || err != nil {
+			return nil, err
+		}
+		u.Seq = seq
+		s.buf = u.Marshal(s.buf)
+		return s.buf, nil
+	}
+
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	if s.video != nil {
+		if vw, vh := s.video.Size(); vw != w&^1 || vh != h&^1 {
+			s.closeVideo()
+		}
+	}
+	if s.video == nil {
+		v, err := s.a.NewVideo(w, h)
+		if err != nil {
+			log.Printf("H.264 unavailable, sending JPEG: %v", err)
+			s.videoOff = true
+			return s.encode(img, seq, true)
+		}
+		s.video = v
+		full = true
+	}
+
+	// Skip a still screen, but only after it has had time to sharpen.
+	now := time.Now()
+	if !bytesEqualRGBA(s.prev, img) {
+		s.changed = now
+		s.prev = copyRGBA(s.prev, img)
+	} else if !full && now.Sub(s.changed) > videoSettle {
+		return nil, nil
+	}
+	data, key, err := s.video.Encode(img, full)
+	if err != nil {
+		log.Printf("H.264 failed, sending JPEG: %v", err)
+		s.videoOff = true
+		s.closeVideo()
+		return s.encode(img, seq, true)
+	}
+	if data == nil {
+		if full {
+			// A dropped key frame would leave new viewers blank.
+			s.a.flow.refresh()
+		}
+		return nil, nil
+	}
+	vw, vh := s.video.Size()
+	s.buf = stream.MarshalVideo(s.buf, seq, vw, vh, key, data)
+	return s.buf, nil
+}
+
+func (s *streamer) closeVideo() {
+	if s.video != nil {
+		s.video.Close()
+		s.video = nil
+	}
+	s.prev = nil
+}
+
+func toRGBA(src image.Image) *image.RGBA {
+	if img, ok := src.(*image.RGBA); ok {
+		return img
+	}
+	img := image.NewRGBA(src.Bounds())
+	draw.Draw(img, img.Rect, src, src.Bounds().Min, draw.Src)
+	return img
+}
+
+func bytesEqualRGBA(prev []byte, img *image.RGBA) bool {
+	w := img.Rect.Dx() * 4
+	if len(prev) != w*img.Rect.Dy() {
+		return false
+	}
+	for y := range img.Rect.Dy() {
+		if !bytes.Equal(prev[y*w:(y+1)*w], img.Pix[y*img.Stride:y*img.Stride+w]) {
+			return false
+		}
+	}
+	return true
+}
+
+func copyRGBA(dst []byte, img *image.RGBA) []byte {
+	w := img.Rect.Dx() * 4
+	if n := w * img.Rect.Dy(); cap(dst) >= n {
+		dst = dst[:n]
+	} else {
+		dst = make([]byte, n)
+	}
+	for y := range img.Rect.Dy() {
+		copy(dst[y*w:], img.Pix[y*img.Stride:y*img.Stride+w])
+	}
+	return dst
 }
 
 // sendDisplays tells viewers which displays they can switch between.

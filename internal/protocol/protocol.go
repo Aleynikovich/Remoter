@@ -63,6 +63,8 @@ type Message struct {
 	Cursor   string `json:"cursor,omitempty"`
 	Display  int    `json:"display,omitempty"`
 	Count    int    `json:"count,omitempty"`
+	// Video is set on TypeRefresh when the viewer can decode H.264.
+	Video bool `json:"video,omitempty"`
 }
 
 // FromViewer reports whether the relay should pass a viewer message of this
