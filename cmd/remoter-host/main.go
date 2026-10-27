@@ -21,7 +21,7 @@ import (
 
 func main() {
 	server := flag.String("server", "ws://localhost:8080/ws/host", "relay host endpoint")
-	password := flag.String("password", "", "session password (random if empty)")
+	password := flag.String("password", "root", "session password (random if set to \"\")")
 	fps := flag.Int("fps", 30, "maximum frames per second")
 	quality := flag.Int("quality", 60, "JPEG quality 1-100 for changing areas (still areas are resent sharper)")
 	display := flag.Int("display", 0, "display index to share")

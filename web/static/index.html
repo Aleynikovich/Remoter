@@ -9,10 +9,11 @@
 <body>
 <main id="connect-view">
   <h1>Remoter</h1>
-  <p>Enter the ID and password shown on the remote computer.</p>
+  <p>Enter the password of the remote computer.</p>
   <form id="connect-form">
-    <label>Partner ID <input id="id" inputmode="numeric" autocomplete="off" placeholder="123 456 789" required></label>
-    <label>Password <input id="password" type="password" autocomplete="off" required></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required autofocus></label>
+    <label>Partner ID <span class="hint">only needed if several computers are shared</span>
+      <input id="id" inputmode="numeric" autocomplete="off" placeholder="optional"></label>
     <button type="submit">Connect</button>
     <p id="status" role="status"></p>
   </form>

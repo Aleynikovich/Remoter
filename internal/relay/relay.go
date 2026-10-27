@@ -174,6 +174,15 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 		conn.Close(websocket.StatusPolicyViolation, msg)
 	}
 
+	if req.ID == "" {
+		// No ID: connect to the only shared computer, if there is one.
+		id, err := s.onlyHost()
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		req.ID = id
+	}
 	if s.locked(req.ID) {
 		fail("too many attempts, try again later")
 		return
@@ -269,6 +278,21 @@ func (s *Server) host(id string) *host {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hosts[id]
+}
+
+// onlyHost returns the ID of the single connected host.
+func (s *Server) onlyHost() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch len(s.hosts) {
+	case 0:
+		return "", errors.New("no computer is being shared on this server")
+	case 1:
+		for id := range s.hosts {
+			return id, nil
+		}
+	}
+	return "", errors.New("several computers are shared here, enter the partner ID")
 }
 
 func (s *Server) locked(id string) bool {

@@ -21,7 +21,7 @@ screen, let someone control it, and connect with a 9-digit ID and a password.
   It also serves the web viewer. Repeated wrong passwords lock an ID for a
   minute.
 * **remoter-host** runs on the computer being shared. It prints its ID and a
-  random password, checks passwords itself (the server only passes them
+  password (`root` by default), checks passwords itself (the server only passes them
   through), captures the screen while someone is watching, and receives mouse
   and keyboard events. It compares each capture with the last one in 64×64
   tiles and sends only the tiles that changed, as JPEG. Tiles that stop
@@ -45,6 +45,11 @@ go run ./cmd/remoter-host -test-pattern
 ```
 
 Open http://localhost:8080, enter the ID and password.
+
+The host's password is `root` unless you pass `-password` (use
+`-password ""` for a random one). When only one computer is shared on the
+server, the viewer needs just the password; the partner ID is only asked for
+when several are connected.
 
 Host flags: `-server`, `-password`, `-fps`, `-quality`, `-display`,
 `-view-only`, `-no-clipboard`, `-test-pattern`.

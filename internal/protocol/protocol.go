@@ -15,7 +15,8 @@ const (
 	TypeRegister = "register"
 	// server -> host: the assigned session ID.
 	TypeRegistered = "registered"
-	// viewer -> server: request access to a host.
+	// viewer -> server: request access to a host. An empty ID means the only
+	// host on the server.
 	TypeConnect = "connect"
 	// server -> host: a viewer wants access; the host checks the password.
 	TypeAuth = "auth"

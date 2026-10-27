@@ -311,6 +311,13 @@ func TestWrongPasswordIsRejected(t *testing.T) {
 	}
 }
 
+func TestEmptyIDConnectsToOnlyHost(t *testing.T) {
+	base, _ := startHost(t, "root", nil)
+	if _, m := dialViewer(t, base, "", "root"); m.Type != protocol.TypeConnected {
+		t.Fatalf("got %+v, want connected", m)
+	}
+}
+
 func TestUnknownID(t *testing.T) {
 	base, _ := startHost(t, "secret", nil)
 	_, m := dialViewer(t, base, "000000000", "secret")
