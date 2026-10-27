@@ -5,6 +5,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -211,6 +212,9 @@ func startServer(ctx context.Context, addr string, stop func()) (*http.Server, e
 		fmt.Fprint(w, version())
 	})
 	mux.Handle("/shutdown", shutdownHandler(stop))
+	// Viewers that cannot ask Tailscale themselves list the tailnet here.
+	_, port, _ := net.SplitHostPort(addr)
+	mux.Handle("/devices", devicesHandler(cmp.Or(port, "8080")))
 	// Embedded files carry no dates, so tell browsers to check every time;
 	// otherwise a viewer could keep running an old viewer.js after an update.
 	files := http.FileServerFS(static)
