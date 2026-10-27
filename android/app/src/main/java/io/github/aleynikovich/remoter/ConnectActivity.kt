@@ -21,6 +21,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
@@ -148,41 +149,132 @@ class ConnectActivity : Activity() {
         setContentView(scroll)
     }
 
+    /** One row of the list: a dot, a name and a line of detail. */
+    private class Row(val view: View, val dot: View, val title: TextView, val detail: TextView)
+
+    private fun row(title: String, detail: String, onClick: () -> Unit, onLongClick: (() -> Unit)?): Row {
+        val dot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(GREY)
+            }
+        }
+        val titleView = text(17f, Color.WHITE, title)
+        val detailView = text(13f, 0xFF9AA3B2.toInt(), detail)
+        val view = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            setBackgroundResource(R.drawable.key_bg)
+            addView(dot, LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(14) })
+            addView(LinearLayout(this@ConnectActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(titleView)
+                addView(detailView)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(text(15f, 0xFF8AB4FF.toInt(), "Connect"))
+            setOnClickListener { onClick() }
+            if (onLongClick != null) setOnLongClickListener {
+                onLongClick()
+                true
+            }
+        }
+        return Row(view, dot, titleView, detailView)
+    }
+
+    private fun Row.state(online: Boolean) = (dot.background as GradientDrawable).setColor(if (online) GREEN else GREY)
+
+    private fun addRow(r: Row) = list.addView(r.view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        bottomMargin = dp(8)
+    })
+
+    private val tailnetHeader by lazy {
+        text(13f, 0xFF9AA3B2.toInt(), "ON YOUR TAILNET").apply { setPadding(0, dp(12), 0, dp(8)) }
+    }
+    private val tailnetRows = mutableMapOf<String, Row>()
+    private val savedRows = mutableMapOf<String, Row>()
+
+    /**
+     * Saved computers first, then the other devices on the tailnet. Android
+     * apps cannot ask Tailscale for its device list, so it comes from the
+     * Remoter hosts themselves (GET /devices on each one that answers).
+     */
     private fun showComputers() {
         list.removeAllViews()
+        tailnetRows.clear()
+        savedRows.clear()
         for (c in prefs.computers) {
-            val dot = View(this).apply {
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(0xFF6B7280.toInt())
-                }
-            }
-            val detail = text(13f, 0xFF9AA3B2.toInt(), "Checking…")
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(14), dp(14), dp(14))
-                setBackgroundResource(R.drawable.key_bg)
-                addView(dot, LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(14) })
-                addView(LinearLayout(this@ConnectActivity).apply {
-                    orientation = LinearLayout.VERTICAL
-                    addView(text(17f, Color.WHITE, c))
-                    addView(detail)
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                addView(text(15f, 0xFF8AB4FF.toInt(), "Connect"))
-                setOnClickListener { connect(c) }
-                setOnLongClickListener {
-                    computerMenu(c)
-                    true
-                }
-            }
-            list.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(8)
-            })
+            val r = row(prefs.name(c) ?: c, "Checking…", { connect(c) }, { computerMenu(c) })
+            if (prefs.name(c) != null) r.detail.text = "$c · checking…"
+            savedRows[c] = r
+            addRow(r)
             probe(c) { build ->
-                (dot.background as GradientDrawable).setColor(if (build != null) 0xFF34D399.toInt() else 0xFF6B7280.toInt())
-                detail.text = if (build != null) "Online · $build · long-press for options" else "Not answering · long-press for options"
+                r.state(build != null)
+                val where = if (prefs.name(c) != null) "$c · " else ""
+                r.detail.text = where + if (build != null) "Remoter $build" else "Not answering"
+                if (build != null) discover(c)
             }
+        }
+        list.addView(tailnetHeader)
+        tailnetHeader.visibility = View.GONE
+        prefs.tailnet?.let { cached -> runCatching { showTailnet(JSONObject(cached), fresh = false) } }
+    }
+
+    /** Asks a host for the devices on its tailnet. Hosts without /devices just say 404. */
+    private fun discover(computer: String) {
+        pool.execute {
+            val json = try {
+                val conn = URL(RelayClient.baseUrl(computer) + "/devices").openConnection() as HttpURLConnection
+                conn.connectTimeout = 2500
+                conn.readTimeout = 8000
+                try {
+                    if (conn.responseCode == 200) JSONObject(conn.inputStream.bufferedReader().readText()) else null
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                null
+            } ?: return@execute
+            main.post {
+                if (isDestroyed) return@post
+                prefs.tailnet = json.toString()
+                showTailnet(json, fresh = true)
+            }
+        }
+    }
+
+    private fun showTailnet(json: JSONObject, fresh: Boolean) {
+        val devices = json.optJSONArray("devices") ?: return
+        for (i in 0 until devices.length()) {
+            val d = devices.getJSONObject(i)
+            val ip = d.optString("ip")
+            if (ip.isEmpty() || d.optString("os").equals("android", true) || d.optString("os").equals("iOS", true)) continue
+            val addr = "$ip:8080"
+            val name = d.optString("name").ifEmpty { ip }
+            val remoter = d.optString("remoter")
+            val online = d.optBoolean("online")
+            if (prefs.name(addr) != name) prefs.setName(addr, name)
+            val detail = "$ip · " + when {
+                remoter.isNotEmpty() -> "Remoter $remoter"
+                online -> "online, Remoter not running"
+                else -> "offline"
+            } + if (fresh) "" else " (last seen)"
+            val saved = savedRows[addr]
+            if (saved != null) {
+                saved.title.text = name
+                continue
+            }
+            val r = tailnetRows.getOrPut(addr) {
+                row(name, detail, { connect(addr) }, null).also {
+                    list.addView(it.view, list.childCount, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        bottomMargin = dp(8)
+                    })
+                }
+            }
+            r.title.text = name
+            r.detail.text = detail
+            r.state(remoter.isNotEmpty())
+            tailnetHeader.visibility = View.VISIBLE
         }
     }
 
@@ -313,9 +405,11 @@ class ConnectActivity : Activity() {
 
     companion object {
         private const val REQUEST_SESSION = 1
+        private const val GREEN = 0xFF34D399.toInt()
+        private const val GREY = 0xFF6B7280.toInt()
         private const val HELP = "Tap a computer to connect. The password defaults to root.\n\n" +
-            "Touch mode: tap to click, long-press for right click, drag to drag.\n" +
-            "Trackpad mode: slide to move the pointer, tap to click, long-press to drag.\n" +
+            "Touch mouse (default): slide to move the pointer, tap to click, long-press or tap-and-slide to drag.\n" +
+            "Direct touch: tap to click where you touch, long-press for right click.\n" +
             "Both: pinch to zoom, two fingers to scroll, two-finger tap for right click, " +
             "three fingers to pan, three-finger tap for the keyboard.\n\n" +
             "With a mouse (DeX or Bluetooth), Lock mouse captures it; Ctrl+Alt+Esc lets go."

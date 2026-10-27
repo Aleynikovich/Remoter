@@ -12,12 +12,15 @@ show up as an update banner on the app's start screen.
 
 ## Using it
 
-- Start screen: saved computers with a live "online" dot (GET `/version`).
-  Tap to connect; the password defaults to `root` and is asked for only if
-  the host refuses it. Long-press for password or remove.
-- **Touch** mode: tap clicks where you touch, drag drags, long-press is a
-  right click. **Trackpad** mode: slide to move the pointer, tap to click,
-  long-press (or tap, then touch again) to drag.
+- Start screen: saved computers with a live "online" dot (GET `/version`),
+  then the other devices on the tailnet. Android apps cannot read
+  Tailscale's device list, so the app asks each host that answers for its
+  `GET /devices`. Tap to connect; the password defaults to `root` and is
+  asked for only if the host refuses it. Long-press for password or remove.
+- **Touch mouse** (default, like TeamViewer): slide to move the pointer, tap
+  to click, long-press (or tap, then touch again) to drag; a zoomed picture
+  scrolls to follow the pointer. **Direct touch**: tap clicks where you
+  touch, drag drags, long-press is a right click.
 - Both modes: pinch to zoom, two-finger drag scrolls, two-finger tap is a
   right click, three fingers pan the zoomed picture, three-finger tap opens
   the keyboard.

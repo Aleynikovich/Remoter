@@ -25,9 +25,20 @@ class Prefs(context: Context) {
         computers = listOf(computer) + computers.filter { it != computer }
     }
 
+    /** Touch drives the pointer like a laptop trackpad (TeamViewer's default) unless switched to direct touch. */
     var trackpad: Boolean
-        get() = p.getBoolean("trackpad", false)
-        set(v) = p.edit().putBoolean("trackpad", v).apply()
+        get() = !p.getBoolean("directTouch", false)
+        set(v) = p.edit().putBoolean("directTouch", !v).apply()
+
+    /** The name a computer goes by on the tailnet, as its host reported it. */
+    fun name(computer: String): String? = p.getString("name:$computer", null)
+
+    fun setName(computer: String, name: String) = p.edit().putString("name:$computer", name).apply()
+
+    /** The last tailnet device list a host gave us, as JSON, shown until a fresh one arrives. */
+    var tailnet: String?
+        get() = p.getString("tailnet", null)
+        set(v) = p.edit().putString("tailnet", v).apply()
 
     var video: Boolean
         get() = p.getBoolean("video", true)

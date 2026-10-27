@@ -59,7 +59,7 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
     val tiles = TileView(context)
     private val cursor = CursorView(context)
 
-    var mode = Mode.TOUCH
+    var mode = Mode.TRACKPAD
         set(value) {
             field = value
             updateCursorShown()
@@ -209,16 +209,26 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
         remote.move(nx(), ny())
     }
 
-    /** Pans a zoomed picture so the pointer stays on screen. */
+    /**
+     * Pans a zoomed picture so it follows the pointer: once the pointer gets
+     * within a fifth of the view of an edge, the picture scrolls with it.
+     */
     private fun ensureCursorVisible() {
         if (zoom <= 1f) return
         val s = scale()
-        val margin = 40 * density
+        val margin = max(40 * density, min(width, height) / 5f)
         val vx = tx + curX * s
         val vy = ty + curY * s
         if (vx < margin) tx += margin - vx else if (vx > width - margin) tx -= vx - (width - margin)
         if (vy < margin) ty += margin - vy else if (vy > height - margin) ty -= vy - (height - margin)
         applyTransform()
+    }
+
+    private fun cursorInView(): Boolean {
+        val s = scale()
+        val vx = tx + curX * s
+        val vy = ty + curY * s
+        return vx in 0f..width.toFloat() && vy in 0f..height.toFloat()
     }
 
     private fun setZoomAround(newZoom: Float, anchorCx: Float, anchorCy: Float, fx: Float, fy: Float) {
@@ -352,7 +362,14 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
                         }
                         g = G.DONE
                     }
-                    G.PINCH, G.SCROLL -> g = G.DONE
+                    G.PINCH -> {
+                        // Zooming may leave the pointer off screen; in trackpad
+                        // mode bring it to where the fingers were, so the next
+                        // slide does not yank the picture back.
+                        if (mode == Mode.TRACKPAD && !cursorInView()) pointTo(contentX(focalX), contentY(focalY))
+                        g = G.DONE
+                    }
+                    G.SCROLL -> g = G.DONE
                     else -> {}
                 }
             }

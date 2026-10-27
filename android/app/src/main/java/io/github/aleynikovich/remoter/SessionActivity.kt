@@ -324,13 +324,13 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         prefs.trackpad = screen.mode == ScreenView.Mode.TRACKPAD
         updateModeButton()
         showNotice(
-            if (prefs.trackpad) "Trackpad: drag to move the pointer, tap to click, long-press to drag"
+            if (prefs.trackpad) "Touch mouse: slide to move the pointer, tap to click, long-press to drag"
             else "Direct touch: tap to click where you touch, long-press for right click",
         )
     }
 
     private fun updateModeButton() {
-        modeButton.text = if (screen.mode == ScreenView.Mode.TOUCH) "☝ Touch" else "▭ Trackpad"
+        modeButton.text = if (screen.mode == ScreenView.Mode.TOUCH) "☝ Direct touch" else "▭ Touch mouse"
     }
 
     private fun showLatches() {
