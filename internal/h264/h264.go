@@ -53,6 +53,8 @@ var (
 	ready    atomic.Bool
 	create   uintptr // WelsCreateSVCEncoder
 	destroy  uintptr // WelsDestroySVCEncoder
+
+	createDecoder, destroyDecoder uintptr // WelsCreateDecoder, WelsDestroyDecoder
 )
 
 // Load loads the OpenH264 library. It is safe to call more than once; later
@@ -63,8 +65,21 @@ func Load() error {
 			loadErr = errors.New("h264: needs a 64-bit platform")
 			return
 		}
-		create, destroy, loadErr = openLibrary()
-		ready.Store(loadErr == nil)
+		var sym func(string) (uintptr, error)
+		if sym, loadErr = openLibrary(); loadErr != nil {
+			return
+		}
+		var err1, err2 error
+		create, err1 = sym("WelsCreateSVCEncoder")
+		destroy, err2 = sym("WelsDestroySVCEncoder")
+		if err1 != nil || err2 != nil {
+			loadErr = errors.New("h264: OpenH264 entry points missing")
+			return
+		}
+		// The decoder is optional; only the desktop viewer uses it.
+		createDecoder, _ = sym("WelsCreateDecoder")
+		destroyDecoder, _ = sym("WelsDestroyDecoder")
+		ready.Store(true)
 	})
 	return loadErr
 }

@@ -33,3 +33,11 @@ jobs:
           ./remoter.exe -stop -addr :18080
           Start-Sleep 1
           try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18080/version; exit 1 } catch { "stopped" }
+      - if: runner.os == 'Windows'
+        name: Desktop viewer self-test
+        shell: pwsh
+        run: |
+          go build -o remoter-viewer.exe ./cmd/remoter-viewer
+          $out = ./remoter-viewer.exe -selftest | Out-String
+          $out
+          if ($out.Trim() -ne "ok") { exit 1 }

@@ -3,6 +3,7 @@ package viewer
 import (
 	"image"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -56,14 +57,17 @@ func TestFitAndNormalize(t *testing.T) {
 
 func TestConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "remoter", "viewer.json")
-	if c := LoadConfig(path); c != (Config{}) {
+	if c := LoadConfig(path); !reflect.DeepEqual(c, Config{}) {
 		t.Fatalf("missing file gave %+v", c)
 	}
-	want := Config{Server: "relay:8080", Password: "root"}
+	want := Config{Server: "relay:8080", Password: "root", Passwords: map[string]string{"relay:8080": "s3cret"}}
 	if err := want.Save(path); err != nil {
 		t.Fatal(err)
 	}
-	if got := LoadConfig(path); got != want {
+	if got := LoadConfig(path); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if p := want.PasswordFor("other:8080"); p != "root" {
+		t.Errorf("default password %q", p)
 	}
 }

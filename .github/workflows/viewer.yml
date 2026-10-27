@@ -1,5 +1,5 @@
 name: Viewer
-# Publishes the Linux desktop viewer. Pushes get their own numbered
+# Publishes the desktop viewer for Linux and Windows. Pushes get their own numbered
 # viewer-dev prerelease, so viewer builds never carry host binaries and a
 # test PC's host does not reinstall itself for viewer-only work. Viewers
 # install the newest release that has their asset, hosts the newest that
@@ -25,17 +25,20 @@ jobs:
           VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('viewer-dev-{0}', github.run_number) }}
         run: |
           mkdir dist
+          ldflags="-s -w -X github.com/aleynikovich/remoter/internal/update.Version=$VERSION"
           for arch in amd64 arm64; do
-            GOOS=linux GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -X github.com/aleynikovich/remoter/internal/update.Version=$VERSION" \
+            GOOS=linux GOARCH=$arch go build -trimpath -ldflags "$ldflags" \
               -o "dist/remoter-viewer-linux-$arch" ./cmd/remoter-viewer
           done
+          # A GUI program on Windows: no console window opens with it.
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags -H windowsgui" \
+            -o dist/remoter-viewer-windows-amd64.exe ./cmd/remoter-viewer
           cp scripts/install-viewer.sh dist/
           ls -l dist
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('viewer-dev-{0}', github.run_number) }}
-          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Linux viewer {0} ({1})', github.run_number, github.ref_name) }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Desktop viewer {0} ({1})', github.run_number, github.ref_name) }}
           target_commitish: ${{ github.sha }}
           prerelease: ${{ github.ref_type != 'tag' || contains(github.ref_name, '-') }}

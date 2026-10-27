@@ -1,18 +1,17 @@
-//go:build linux
+//go:build linux || windows
 
 package main
 
 import (
-	"errors"
 	"fmt"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
 )
 
-// SDL 2 is loaded at run time (every Linux desktop has it, and on current
-// distributions it is sdl2-compat on top of SDL 3), so the viewer builds
-// without cgo. Constants and event layouts follow SDL2's headers, which have
+// SDL 2 is loaded at run time, so the viewer builds without cgo: on Linux
+// from the system (every desktop has it, on current distributions as
+// sdl2-compat on top of SDL 3), on Windows from SDL's official release. Constants and event layouts follow SDL2's headers, which have
 // kept them stable since 2.0.
 
 const (
@@ -117,27 +116,22 @@ var sdl struct {
 	GetKeyFromScancode     func(sc int32) int32
 }
 
-// loadSDL opens libSDL2 and binds the functions above.
+// loadSDL opens SDL 2 and binds the functions above.
 func loadSDL() error {
-	var lib uintptr
-	var err error
-	for _, name := range []string{"libSDL2-2.0.so.0", "libSDL2-2.0.so", "libSDL2.so"} {
-		if lib, err = purego.Dlopen(name, purego.RTLD_NOW|purego.RTLD_GLOBAL); err == nil {
-			break
-		}
-	}
-	if lib == 0 {
-		return errors.New("SDL2 is not installed (Arch: pacman -S sdl2, Debian/Ubuntu: apt install libsdl2-2.0-0, Fedora: dnf install SDL2)")
+	sym, err := openSDL()
+	if err != nil {
+		return err
 	}
 	bind := func(fn any, name string) {
 		if err != nil {
 			return
 		}
-		if _, e := purego.Dlsym(lib, name); e != nil {
+		addr, e := sym(name)
+		if e != nil || addr == 0 {
 			err = fmt.Errorf("SDL2 is too old: %s missing", name)
 			return
 		}
-		purego.RegisterLibFunc(fn, lib, name)
+		purego.RegisterFunc(fn, addr)
 	}
 	bind(&sdl.Init, "SDL_Init")
 	bind(&sdl.Quit, "SDL_Quit")

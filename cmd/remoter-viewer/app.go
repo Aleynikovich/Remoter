@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || windows
 
 package main
 
@@ -11,6 +11,8 @@ import (
 	"image/jpeg"
 	"log"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +32,9 @@ const (
 
 // scancodes the viewer itself looks at.
 const (
+	scF5       = 62
+	scDown     = 81
+	scUp       = 82
 	scEnter    = 40
 	scEscape   = 41
 	scBack     = 42
@@ -57,15 +62,21 @@ type app struct {
 	cfg     viewer.Config
 	cfgPath string
 	form    *form
+	list    *deviceList
+	manual  bool // the address form is showing instead of the device list
 	formTex uintptr
+
+	scans    chan scanResult
+	scanning bool
+	lastScan time.Time
 
 	client    *viewer.Client
 	cancel    context.CancelFunc
 	connected bool
 	server    string
 
-	dec       *decoder
-	decErr    error
+	newDec    func() (videoDecoder, error) // nil when H.264 is unavailable
+	dec       videoDecoder
 	lastIDR   time.Time
 	needKey   bool // frames before the first key frame cannot be decoded
 	mode      int
@@ -100,7 +111,7 @@ type app struct {
 	dirty         bool
 }
 
-func newApp(cfg viewer.Config, cfgPath string, fullscreen bool, avErr error, update *atomic.Bool) (*app, error) {
+func newApp(cfg viewer.Config, cfgPath string, fullscreen bool, newDec func() (videoDecoder, error), update *atomic.Bool) (*app, error) {
 	sdl.SetHint("SDL_VIDEO_WAYLAND_WMCLASS", "remoter-viewer")
 	sdl.SetHint("SDL_VIDEO_X11_WMCLASS", "remoter-viewer")
 	sdl.SetHint("SDL_APP_NAME", "Remoter")
@@ -110,6 +121,10 @@ func newApp(cfg viewer.Config, cfgPath string, fullscreen bool, avErr error, upd
 	// from waiting on vblank saves up to a frame of delay.
 	sdl.SetHint("SDL_RENDER_VSYNC", "0")
 	sdl.SetHint("SDL_VIDEO_ALLOW_SCREENSAVER", "1")
+	// Sharp on scaled Windows displays, with window sizes in scaled units
+	// like on Wayland and macOS.
+	sdl.SetHint("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2")
+	sdl.SetHint("SDL_WINDOWS_DPI_SCALING", "1")
 	// Native Wayland, not XWayland: it is what lets Hyprland, Sway, GNOME
 	// and KDE hand the viewer their shortcuts (keyboard-shortcuts-inhibit)
 	// and keep the pointer in the window (pointer-constraints). SDL 2 still
@@ -149,7 +164,9 @@ func newApp(cfg viewer.Config, cfgPath string, fullscreen bool, avErr error, upd
 		update:   update,
 		cfg:      cfg, cfgPath: cfgPath,
 		form:    newForm(cfg.Server, cfg.ID, cfg.Password),
-		decErr:  avErr,
+		list:    &deviceList{},
+		scans:   make(chan scanResult, 4),
+		newDec:  newDec,
 		held:    map[string]string{},
 		buttons: map[int]bool{},
 		swallow: map[int32]bool{},
@@ -157,10 +174,8 @@ func newApp(cfg viewer.Config, cfgPath string, fullscreen bool, avErr error, upd
 		scale:   1,
 		dirty:   true,
 	}
-	if avErr != nil {
-		log.Printf("H.264 off, using JPEG tiles: %v", avErr)
-	}
 	sdl.StartTextInput()
+	a.scan()
 	return a, nil
 }
 
@@ -187,6 +202,7 @@ func (a *app) run() bool {
 		}
 		a.woken.Store(false)
 		a.drainClient()
+		a.drainScans()
 		a.flushMove()
 		a.tick()
 		if a.dirty {
@@ -232,11 +248,13 @@ func (a *app) handle(ev *sdlEvent) {
 	case sdlKeyDown, sdlKeyUp:
 		if a.client != nil {
 			a.sessionKey(ev, ev.typ() == sdlKeyDown)
-		} else if ev.typ() == sdlKeyDown {
+		} else if ev.typ() == sdlKeyDown && a.manual {
 			a.formKey(ev)
+		} else if ev.typ() == sdlKeyDown {
+			a.listKey(ev)
 		}
 	case sdlTextInput:
-		if a.client == nil && a.form.focus < 3 {
+		if a.client == nil && a.manual && a.form.focus < 3 {
 			text := ev[12:44]
 			if i := bytes.IndexByte(text, 0); i >= 0 {
 				text = text[:i]
@@ -287,6 +305,9 @@ func (a *app) formKey(ev *sdlEvent) {
 		f.focus = (f.focus + 1) % 4
 	case sc == scEnter || sc == scKPEnter:
 		a.connect()
+	case sc == scEscape:
+		a.manual = false
+		a.lastScan = time.Time{} // look again now
 	case sc == scBack && f.focus < 3:
 		v := f.values[f.focus]
 		_, size := utf8.DecodeLastRuneInString(v)
@@ -301,6 +322,16 @@ func (a *app) formKey(ev *sdlEvent) {
 
 func (a *app) formClick(x, y int) {
 	p := image.Pt(int(float64(x)*a.scale), int(float64(y)*a.scale))
+	if !a.manual {
+		for i, r := range a.list.hit {
+			if p.In(r) && a.list.usable(i) {
+				a.list.selected = i
+				a.openSelected()
+				return
+			}
+		}
+		return
+	}
 	for i, r := range a.form.hit {
 		if p.In(r) {
 			a.form.focus = i
@@ -313,7 +344,108 @@ func (a *app) formClick(x, y int) {
 	}
 }
 
-func (a *app) connect() {
+// ---- device list ----
+
+// scanResult is a look at the tailnet: first the bare list, then (probed)
+// with what runs on each device.
+type scanResult struct {
+	devices []viewer.Device
+	probed  bool
+	err     error
+}
+
+// scan looks for devices in the background.
+func (a *app) scan() {
+	if a.scanning {
+		return
+	}
+	a.scanning, a.lastScan = true, time.Now()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ds, err := viewer.TailnetDevices(ctx)
+		if err != nil {
+			a.scans <- scanResult{err: err, probed: true}
+		} else {
+			a.scans <- scanResult{devices: slices.Clone(ds)}
+			a.wakeUp()
+			a.scans <- scanResult{devices: viewer.ProbeDevices(ctx, ds), probed: true}
+		}
+		a.wakeUp()
+	}()
+}
+
+func (a *app) drainScans() {
+	for {
+		select {
+		case r := <-a.scans:
+			l := a.list
+			if r.probed {
+				a.scanning = false
+			}
+			// Until the user picks a row, the last computer used (or the
+			// first one running Remoter) stays selected.
+			keep := a.cfg.Server
+			if l.picked && l.selected < len(l.devices) {
+				keep = l.devices[l.selected].Addr()
+			}
+			pickedManual := l.picked && l.selected >= len(l.devices)
+			if r.err != nil {
+				l.devices, l.err = nil, r.err.Error()
+			} else {
+				l.devices, l.err = r.devices, ""
+			}
+			l.scanned = l.scanned || r.probed
+			l.selected = len(l.devices)
+			if !pickedManual {
+				l.selectAddr(keep)
+			}
+			a.dirty = a.dirty || (a.client == nil && !a.manual)
+		default:
+			return
+		}
+	}
+}
+
+func (a *app) listKey(ev *sdlEvent) {
+	switch ev.i32(16) {
+	case scUp:
+		a.list.move(-1)
+		a.list.picked = true
+	case scDown, scTab:
+		a.list.move(1)
+		a.list.picked = true
+	case scEnter, scKPEnter:
+		a.openSelected()
+	case scF5:
+		a.lastScan = time.Time{}
+	default:
+		return
+	}
+	a.dirty = true
+}
+
+// openSelected connects to the selected device, or opens the address form.
+func (a *app) openSelected() {
+	l := a.list
+	if l.selected >= len(l.devices) {
+		a.manual = true
+		a.form.focus = 0
+		a.formChanged()
+		return
+	}
+	d := l.devices[l.selected]
+	// Hosts use the default password unless set otherwise, so computers
+	// on the tailnet open without asking.
+	a.form.values = [3]string{d.Addr(), "", a.cfg.PasswordFor(d.Addr())}
+	a.connectAs(d.Name)
+}
+
+func (a *app) connect() { a.connectAs("") }
+
+// connectAs connects to the server in the form, calling it label in the
+// window title.
+func (a *app) connectAs(label string) {
 	f := a.form
 	c, err := viewer.NewClient(f.values[0], f.values[1], f.values[2])
 	if err != nil {
@@ -321,21 +453,23 @@ func (a *app) connect() {
 		a.dirty = true
 		return
 	}
-	a.cfg = viewer.Config{Server: f.values[0], ID: f.values[1], Password: f.values[2]}
+	a.cfg.Server, a.cfg.ID, a.cfg.Password = f.values[0], f.values[1], f.values[2]
+	if a.cfg.Passwords == nil {
+		a.cfg.Passwords = map[string]string{}
+	}
+	a.cfg.Passwords[f.values[0]] = f.values[2]
 	if a.cfgPath != "" {
 		if err := a.cfg.Save(a.cfgPath); err != nil {
 			log.Printf("save settings: %v", err)
 		}
 	}
-	if a.dec == nil && a.decErr == nil {
-		a.dec, a.decErr = newDecoder()
-		if a.decErr != nil {
-			log.Printf("H.264 off, using JPEG tiles: %v", a.decErr)
-		}
-	}
 	c.Wake = a.wakeUp
 	ctx, cancel := context.WithCancel(context.Background())
-	a.client, a.cancel, a.server = c, cancel, f.values[0]
+	if label == "" {
+		label = f.values[0]
+	}
+	a.client, a.cancel, a.server = c, cancel, label
+	a.list.status = ""
 	go c.Run(ctx)
 	sdl.StopTextInput()
 	a.showNotice("Connecting to "+a.server+"…", time.Hour)
@@ -352,11 +486,21 @@ func (a *app) disconnect(status string) {
 	a.cancel()
 	a.client, a.cancel, a.connected = nil, nil, false
 	a.capture(false)
+	a.stopDecoder()
 	a.setCursor("default")
 	a.mode = modeNone
 	a.acks = a.acks[:0]
 	a.notice = ""
-	a.form.status, a.form.err = status, status != "" && status != "Disconnected."
+	isErr := status != "" && status != "Disconnected."
+	a.form.status, a.form.err = status, isErr
+	a.list.status, a.list.isErr = status, isErr
+	if strings.Contains(strings.ToLower(status), "password") {
+		// This computer has its own password: ask for it.
+		a.manual = true
+		a.form.focus = fieldPassword
+		a.form.values[fieldPassword] = ""
+		a.form.status = "Enter the password for " + a.server
+	}
 	a.setTitle("Remoter")
 	sdl.StartTextInput()
 	a.dirty = true
@@ -383,10 +527,7 @@ func (a *app) drainClient() {
 		case viewer.EventConnected:
 			a.connected = true
 			a.releaseHeld()
-			if a.dec != nil {
-				a.dec.reset()
-				a.needKey = true
-			}
+			a.startDecoder()
 			a.client.Refresh(a.dec != nil)
 			a.capture(true)
 			a.syncClipboard()
@@ -413,6 +554,28 @@ func (a *app) drainClient() {
 		case viewer.EventEnded:
 			a.disconnect(ev.Text)
 		}
+	}
+}
+
+// startDecoder gives the new connection a fresh decoder, since its stream
+// starts over with a key frame.
+func (a *app) startDecoder() {
+	a.stopDecoder()
+	if a.newDec == nil {
+		return
+	}
+	dec, err := a.newDec()
+	if err != nil {
+		log.Printf("H.264 off, using JPEG tiles: %v", err)
+		return
+	}
+	a.dec, a.needKey = dec, true
+}
+
+func (a *app) stopDecoder() {
+	if a.dec != nil {
+		a.dec.close()
+		a.dec = nil
 	}
 }
 
@@ -736,6 +899,9 @@ func (a *app) setTitle(t string) {
 // tick does the once-a-second work: frame rate in the title, notice expiry.
 func (a *app) tick() {
 	now := time.Now()
+	if a.client == nil && !a.manual && now.Sub(a.lastScan) > 10*time.Second {
+		a.scan()
+	}
 	if a.notice != "" && now.After(a.noticeUntil) {
 		a.showNotice("", 0)
 	}
@@ -767,7 +933,7 @@ func (a *app) render() {
 	sdl.RenderClear(a.ren)
 
 	if a.client == nil {
-		a.drawForm(out)
+		a.drawStart(out)
 	} else {
 		tex, size := uintptr(0), image.Point{}
 		switch a.mode {
@@ -796,11 +962,14 @@ func (a *app) render() {
 	sdl.RenderPresent(a.ren)
 }
 
-func (a *app) drawForm(out image.Point) {
+func (a *app) drawStart(out image.Point) {
 	if a.formTex != 0 {
 		sdl.DestroyTexture(a.formTex)
 	}
-	img := a.form.draw(out, a.scale)
+	img := a.list.draw(out, a.scale)
+	if a.manual {
+		img = a.form.draw(out, a.scale)
+	}
 	a.formTex = a.texture(img)
 	d := sdlRect{0, 0, int32(out.X), int32(out.Y)}
 	sdl.RenderCopy(a.ren, a.formTex, nil, &d)

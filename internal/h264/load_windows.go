@@ -28,37 +28,32 @@ const (
 
 // openLibrary loads the OpenH264 DLL from $REMOTER_OPENH264 or the cache
 // folder, downloading it there first if needed.
-func openLibrary() (create, destroy uintptr, err error) {
+func openLibrary() (func(name string) (uintptr, error), error) {
 	if runtime.GOARCH != "amd64" {
-		return 0, 0, errors.New("h264: Cisco only publishes OpenH264 for 64-bit x86 Windows")
+		return nil, errors.New("h264: Cisco only publishes OpenH264 for 64-bit x86 Windows")
 	}
 	path := os.Getenv("REMOTER_OPENH264")
 	if path == "" {
 		dir, err := os.UserCacheDir()
 		if err != nil {
-			return 0, 0, err
+			return nil, err
 		}
 		dir = filepath.Join(dir, "Remoter")
 		path = filepath.Join(dir, dllName)
 		if _, err := os.Stat(path); err != nil {
 			if err := download(dir, path); err != nil {
-				return 0, 0, fmt.Errorf("h264: get %s: %w", dllName, err)
+				return nil, fmt.Errorf("h264: get %s: %w", dllName, err)
 			}
 		}
 	}
 	if err := verifySignature(path); err != nil {
-		return 0, 0, fmt.Errorf("h264: %s is not properly signed: %w", path, err)
+		return nil, fmt.Errorf("h264: %s is not properly signed: %w", path, err)
 	}
 	h, err := windows.LoadLibrary(path)
 	if err != nil {
-		return 0, 0, fmt.Errorf("h264: load %s: %w", path, err)
+		return nil, fmt.Errorf("h264: load %s: %w", path, err)
 	}
-	c, err1 := windows.GetProcAddress(h, "WelsCreateSVCEncoder")
-	d, err2 := windows.GetProcAddress(h, "WelsDestroySVCEncoder")
-	if err1 != nil || err2 != nil {
-		return 0, 0, errors.New("h264: OpenH264 entry points missing")
-	}
-	return c, d, nil
+	return func(name string) (uintptr, error) { return windows.GetProcAddress(h, name) }, nil
 }
 
 func download(dir, path string) error {

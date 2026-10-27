@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || windows
 
 package main
 
@@ -6,12 +6,15 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"slices"
 	"strings"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
+
+	"github.com/aleynikovich/remoter/internal/viewer"
 )
 
 // The connect screen and notices are drawn in Go into an image and shown as
@@ -170,9 +173,9 @@ func (f *form) draw(out image.Point, s float64) *image.RGBA {
 		drawText(img, small, x, y, f.status, c)
 	}
 
-	hint := "Tab: next field  ·  Enter: connect  ·  In a session, Ctrl+Alt+Esc releases keyboard and mouse"
+	hint := "Tab: next field  ·  Enter: connect  ·  Esc: back to the device list"
 	if textWidth(small, hint) > out.X-px(24) {
-		hint = "Ctrl+Alt+Esc releases keyboard and mouse"
+		hint = "Enter: connect  ·  Esc: device list"
 	}
 	drawText(img, small, (out.X-textWidth(small, hint))/2, out.Y-px(18), hint, colMuted)
 	return img
@@ -194,5 +197,147 @@ func noticeImage(text string, s float64) *image.RGBA {
 	img := image.NewRGBA(r)
 	fill(img, r, colNotice)
 	drawText(img, f, px(16), px(25), text, colText)
+	return img
+}
+
+// deviceList is the start screen: the computers on the user's Tailscale
+// network, those running Remoter first. The last row opens the form for a
+// server address instead.
+type deviceList struct {
+	devices  []viewer.Device
+	err      string // why there is no list
+	scanned  bool   // the first scan has finished
+	selected int    // index into devices; len(devices) is the address row
+	picked   bool   // the user moved the selection
+	status   string
+	isErr    bool
+
+	hit []image.Rectangle // rows as drawn, in output pixels
+}
+
+func (l *deviceList) rows() int { return len(l.devices) + 1 }
+
+// usable reports whether row i can be connected to.
+func (l *deviceList) usable(i int) bool {
+	return i == len(l.devices) || i < len(l.devices) && l.devices[i].Online
+}
+
+// move changes the selection by step, skipping offline devices.
+func (l *deviceList) move(step int) {
+	for i := l.selected + step; i >= 0 && i < l.rows(); i += step {
+		if l.usable(i) {
+			l.selected = i
+			return
+		}
+	}
+}
+
+// selectAddr selects the device with this server address, if listed.
+func (l *deviceList) selectAddr(addr string) {
+	for i, d := range l.devices {
+		if d.Addr() == addr && d.Online {
+			l.selected = i
+			return
+		}
+	}
+	for i, d := range l.devices {
+		if d.Remoter != "" {
+			l.selected = i
+			return
+		}
+	}
+	if !l.usable(l.selected) || l.selected >= l.rows() {
+		l.selected = len(l.devices)
+	}
+}
+
+var osNames = map[string]string{"windows": "Windows", "linux": "Linux", "macOS": "macOS", "darwin": "macOS", "android": "Android", "iOS": "iOS"}
+
+func (l *deviceList) draw(out image.Point, s float64) *image.RGBA {
+	img := image.NewRGBA(image.Rectangle{Max: out})
+	fill(img, img.Rect, colBackground)
+	px := func(v float64) int { return int(v*s + 0.5) }
+	title, body, small := face(px(28)), face(px(16)), face(px(13))
+
+	w := min(px(560), out.X-px(32))
+	x0 := (out.X - w) / 2
+	y := px(64)
+	drawText(img, title, x0, y, "Remoter", colText)
+	y += px(30)
+	sub := "Computers on your Tailscale network"
+	if !l.scanned {
+		sub = "Looking for computers on your Tailscale network…"
+	}
+	drawText(img, small, x0, y, sub, colMuted)
+	y += px(20)
+
+	rowH, gap := px(58), px(6)
+	footer := px(64)
+	visible := max((out.Y-y-footer)/(rowH+gap), 1)
+	first := max(0, min(l.selected-visible+1, l.rows()-visible))
+	l.hit = make([]image.Rectangle, l.rows())
+	if l.err != "" {
+		drawText(img, body, x0, y+px(28), l.err, colError)
+		y += px(44)
+	}
+	for i := first; i < l.rows() && i < first+visible; i++ {
+		r := image.Rect(x0, y, x0+w, y+rowH)
+		l.hit[i] = r
+		bg := colPanel
+		if i == l.selected {
+			bg = colField
+		}
+		fill(img, r, bg)
+		if i == l.selected {
+			frame(img, r, max(px(2), 1), colFocus)
+		}
+		name, detail, dim := "Connect by address…", "Type a server address and password", false
+		if i < len(l.devices) {
+			d := l.devices[i]
+			name = d.Name
+			if d.Self {
+				name += " (this computer)"
+			}
+			os := osNames[d.OS]
+			if os == "" {
+				os = d.OS
+			}
+			state := "offline"
+			switch {
+			case d.Remoter != "":
+				state = "Remoter " + d.Remoter + " · ready"
+			case d.Online && l.scanned:
+				state = "Remoter not running"
+			case d.Online:
+				state = "online"
+			}
+			detail = strings.Join(slices.DeleteFunc([]string{os, d.IP, state}, func(s string) bool { return s == "" }), "  ·  ")
+			dim = !d.Online || d.Remoter == "" && l.scanned
+		}
+		c := colText
+		if dim {
+			c = colMuted
+		}
+		drawText(img, body, r.Min.X+px(18), r.Min.Y+px(25), name, c)
+		drawText(img, small, r.Min.X+px(18), r.Min.Y+px(45), detail, colMuted)
+		if i < len(l.devices) && l.devices[i].Remoter != "" {
+			dot := image.Rect(r.Max.X-px(26), r.Min.Y+rowH/2-px(5), r.Max.X-px(16), r.Min.Y+rowH/2+px(5))
+			fill(img, dot, color.RGBA{0x3d, 0xd6, 0x8c, 0xff})
+		}
+		y += rowH + gap
+	}
+
+	if l.status != "" {
+		c := colMuted
+		if l.isErr {
+			c = colError
+		}
+		drawText(img, small, x0, out.Y-px(44), l.status, c)
+	}
+	hint := "↑ ↓: choose  ·  Enter or click: connect  ·  F5: refresh  ·  In a session, Ctrl+Alt+Esc releases keyboard and mouse"
+	if textWidth(small, hint) > out.X-px(24) {
+		hint = "Enter: connect  ·  Ctrl+Alt+Esc releases a session"
+	}
+	drawText(img, small, (out.X-textWidth(small, hint))/2, out.Y-px(18), hint, colMuted)
 	return img
 }

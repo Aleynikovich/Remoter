@@ -11,6 +11,18 @@ type Config struct {
 	Server   string `json:"server"`
 	ID       string `json:"id,omitempty"`
 	Password string `json:"password,omitempty"`
+	// Passwords remembers what worked for each server, for computers
+	// that do not use the default one.
+	Passwords map[string]string `json:"passwords,omitempty"`
+}
+
+// PasswordFor is the password to try for server: the one that worked last
+// time, or the hosts' default.
+func (c Config) PasswordFor(server string) string {
+	if p, ok := c.Passwords[server]; ok {
+		return p
+	}
+	return "root"
 }
 
 // ConfigPath is ~/.config/remoter/viewer.json (or $XDG_CONFIG_HOME's).

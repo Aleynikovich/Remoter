@@ -5,6 +5,7 @@ import (
 	"image"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // nalTypes lists the NAL unit types in an Annex B stream.
@@ -87,5 +88,41 @@ func BenchmarkI420(b *testing.B) {
 	dst := make([]byte, 1920*1080*3/2)
 	for b.Loop() {
 		toI420(dst, img, 1920, 1080)
+	}
+}
+
+func TestDecodeRoundTrip(t *testing.T) {
+	if err := Load(); err != nil {
+		t.Skip(err)
+	}
+	e, err := NewEncoder(320, 240, 2000, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	d, err := NewDecoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	for i := range 3 {
+		img := pattern(320, 240, i*4)
+		data, _, err := e.Encode(img, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := d.Decode(data)
+		if err != nil || p == nil {
+			t.Fatalf("frame %d: picture %v, %v", i, p, err)
+		}
+		if p.Width != 320 || p.Height != 240 || p.Strides[0] < 320 {
+			t.Fatalf("frame %d: %dx%d stride %d", i, p.Width, p.Height, p.Strides[0])
+		}
+		// Luma of a pixel in the middle should survive the trip roughly.
+		got := *(*byte)(unsafe.Add(p.Planes[0], 120*p.Strides[0]+160))
+		want := luma(img.Pix[img.PixOffset(160, 120):])
+		if diff := int(got) - int(want); diff < -24 || diff > 24 {
+			t.Errorf("frame %d: luma %d, want about %d", i, got, want)
+		}
 	}
 }

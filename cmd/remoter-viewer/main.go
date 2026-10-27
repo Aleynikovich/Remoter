@@ -1,6 +1,6 @@
-//go:build linux
+//go:build linux || windows
 
-// Command remoter-viewer is the desktop viewer for Linux: a native window
+// Command remoter-viewer is the desktop viewer for Linux and Windows: a native window
 // that shows a Remoter host's screen and hands it the keyboard and mouse,
 // desktop shortcuts included.
 //
@@ -12,7 +12,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -26,8 +25,14 @@ import (
 	"github.com/aleynikovich/remoter/internal/viewer"
 )
 
-// AssetName is the release file holding this program.
-const AssetName = "remoter-viewer-linux-" + runtime.GOARCH
+// assetName is the release file holding this program.
+func assetName() string {
+	name := "remoter-viewer-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
+}
 
 func init() {
 	// SDL's window and event calls must all come from the main thread.
@@ -41,6 +46,7 @@ func main() {
 	tiles := flag.Bool("jpeg", false, "ask for JPEG tiles instead of H.264 video")
 	noUpdate := flag.Bool("no-update", false, "do not update automatically")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	check := flag.Bool("selftest", false, "check that the window and video libraries work here, then exit")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "usage: remoter-viewer [flags] [server:port]\n")
 		flag.PrintDefaults()
@@ -50,6 +56,15 @@ func main() {
 		fmt.Println(version())
 		return
 	}
+	if *check {
+		if err := selfTest(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		fmt.Println("ok")
+		return
+	}
+	setupLog()
 
 	cfgPath, err := viewer.ConfigPath()
 	if err != nil {
@@ -72,15 +87,17 @@ func main() {
 	}
 
 	if err := loadSDL(); err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
-	avErr := errors.New("turned off with -jpeg")
+	var newDec func() (videoDecoder, error)
 	if !*tiles {
-		avErr = loadAV()
+		if newDec, err = videoDecoders(); err != nil {
+			log.Printf("H.264 off, using JPEG tiles: %v", err)
+		}
 	}
-	a, err := newApp(cfg, cfgPath, *fullscreen, avErr, updated)
+	a, err := newApp(cfg, cfgPath, *fullscreen, newDec, updated)
 	if err != nil {
-		log.Fatal(err)
+		fatal(err)
 	}
 	if server != "" {
 		a.connect()
@@ -89,6 +106,11 @@ func main() {
 		log.Printf("restarting into the new version")
 		log.Fatalf("restart failed, start the viewer again: %v", update.Restart(exe, os.Environ()))
 	}
+}
+
+func fatal(err error) {
+	showError(err)
+	log.Fatal(err)
 }
 
 func version() string {
@@ -102,7 +124,7 @@ func version() string {
 // The window restarts into one the next time no session is open.
 func keepUpdated(exe string, updated *atomic.Bool) {
 	client := &http.Client{Timeout: 5 * time.Minute}
-	c := &update.Checker{Current: update.Version, Asset: AssetName, Client: client}
+	c := &update.Checker{Current: update.Version, Asset: assetName(), Client: client}
 	for {
 		rel, asset, err := c.Latest(context.Background())
 		switch {

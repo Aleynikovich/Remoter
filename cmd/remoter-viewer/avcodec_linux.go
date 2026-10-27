@@ -44,7 +44,6 @@ var av struct {
 	OptSet        func(obj uintptr, name, value string, flags int32) int32
 	SendPacket    func(ctx, pkt uintptr) int32
 	ReceiveFrame  func(ctx, frame uintptr) int32
-	FlushBuffers  func(ctx uintptr)
 	PacketAlloc   func() uintptr
 	PacketFree    func(pkt *uintptr)
 	FrameAlloc    func() uintptr
@@ -90,7 +89,6 @@ func loadAV() error {
 	bind(&av.OptSet, "av_opt_set")
 	bind(&av.SendPacket, "avcodec_send_packet")
 	bind(&av.ReceiveFrame, "avcodec_receive_frame")
-	bind(&av.FlushBuffers, "avcodec_flush_buffers")
 	bind(&av.PacketAlloc, "av_packet_alloc")
 	bind(&av.PacketFree, "av_packet_free")
 	bind(&av.FrameAlloc, "av_frame_alloc")
@@ -109,8 +107,8 @@ func loadAV() error {
 	return err
 }
 
-// decoder turns the host's H.264 access units into YUV pictures.
-type decoder struct {
+// avDecoder turns the host's H.264 access units into YUV pictures.
+type avDecoder struct {
 	ctx, pkt uintptr
 	out      uintptr // receives pictures from the decoder
 	frame    uintptr // the last complete picture
@@ -118,12 +116,12 @@ type decoder struct {
 	bufSize  int
 }
 
-func newDecoder() (*decoder, error) {
+func newAVDecoder() (videoDecoder, error) {
 	codec := av.FindDecoder(avCodecIDH264)
 	if codec == 0 {
 		return nil, errors.New("this FFmpeg has no H.264 decoder")
 	}
-	d := &decoder{ctx: av.AllocContext(codec), pkt: av.PacketAlloc(), out: av.FrameAlloc(), frame: av.FrameAlloc()}
+	d := &avDecoder{ctx: av.AllocContext(codec), pkt: av.PacketAlloc(), out: av.FrameAlloc(), frame: av.FrameAlloc()}
 	if d.ctx == 0 || d.pkt == 0 || d.out == 0 || d.frame == 0 {
 		d.close()
 		return nil, errors.New("libavcodec: out of memory")
@@ -143,7 +141,7 @@ func newDecoder() (*decoder, error) {
 	return d, nil
 }
 
-func (d *decoder) close() {
+func (d *avDecoder) close() {
 	if d.ctx != 0 {
 		av.FreeContext(&d.ctx)
 	}
@@ -164,7 +162,7 @@ func (d *decoder) close() {
 
 // decode feeds one access unit and reports whether it completed a picture,
 // which picture() then describes until the next call.
-func (d *decoder) decode(au []byte) (bool, error) {
+func (d *avDecoder) decode(au []byte) (bool, error) {
 	if len(au)+avInputPadding > d.bufSize {
 		if d.buf != 0 {
 			av.Free(d.buf)
@@ -206,14 +204,7 @@ func (d *decoder) decode(au []byte) (bool, error) {
 	return got, nil
 }
 
-// yuvPicture points at the planes of the last decoded picture.
-type yuvPicture struct {
-	w, h    int
-	planes  [3]unsafe.Pointer
-	pitches [3]int32
-}
-
-func (d *decoder) picture() (yuvPicture, error) {
+func (d *avDecoder) picture() (yuvPicture, error) {
 	f := cPointer(d.frame)
 	if format := *(*int32)(unsafe.Add(f, frameFormat)); format != avPixFmtYUV420P && format != avPixFmtYUVJ420P {
 		return yuvPicture{}, fmt.Errorf("unexpected picture format %d", format)
@@ -228,9 +219,6 @@ func (d *decoder) picture() (yuvPicture, error) {
 	}
 	return p, nil
 }
-
-// reset drops any half-decoded state, after the stream restarts.
-func (d *decoder) reset() { av.FlushBuffers(d.ctx) }
 
 func avError(rc int32) string {
 	buf := make([]byte, 128)
