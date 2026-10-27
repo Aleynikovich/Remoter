@@ -12,6 +12,14 @@
 //	  n bytes               the JPEG image, exactly w×h pixels
 //
 // Viewers keep the last picture and draw each rectangle over it.
+//
+// When every viewer can decode H.264 the host sends video frames instead:
+//
+//	u8  'V'
+//	u32 seq
+//	u16 width, height       picture size in pixels
+//	u8  flags               1 = key frame (starts with SPS and PPS)
+//	... the frame as H.264 Annex B
 package stream
 
 import (
@@ -20,7 +28,10 @@ import (
 	"image"
 )
 
-const kindUpdate = 'U'
+const (
+	kindUpdate = 'U'
+	kindVideo  = 'V'
+)
 
 // Rect is one changed area of the screen and its JPEG encoding.
 type Rect struct {
@@ -97,4 +108,42 @@ func Parse(data []byte) (*Update, error) {
 		return nil, bad
 	}
 	return u, nil
+}
+
+// MarshalVideo encodes an H.264 frame message into buf, reusing its storage.
+func MarshalVideo(buf []byte, seq uint32, w, h int, key bool, frame []byte) []byte {
+	le := binary.LittleEndian
+	buf = append(buf[:0], kindVideo)
+	buf = le.AppendUint32(buf, seq)
+	buf = le.AppendUint16(buf, uint16(w))
+	buf = le.AppendUint16(buf, uint16(h))
+	flags := byte(0)
+	if key {
+		flags = 1
+	}
+	buf = append(buf, flags)
+	return append(buf, frame...)
+}
+
+// Video is a decoded H.264 frame message.
+type Video struct {
+	Seq           uint32
+	Width, Height int
+	Key           bool
+	Frame         []byte
+}
+
+// ParseVideo decodes an H.264 frame message. Frame points into data.
+func ParseVideo(data []byte) (*Video, error) {
+	if len(data) < 10 || data[0] != kindVideo {
+		return nil, errors.New("stream: malformed video frame")
+	}
+	le := binary.LittleEndian
+	return &Video{
+		Seq:    le.Uint32(data[1:]),
+		Width:  int(le.Uint16(data[5:])),
+		Height: int(le.Uint16(data[7:])),
+		Key:    data[9]&1 != 0,
+		Frame:  data[10:],
+	}, nil
 }

@@ -31,6 +31,24 @@ screen, let someone control it, and connect with a 9-digit ID and a password.
 * **web viewer** is a plain HTML/JS page: type the ID and password, see the
   screen, and your mouse and keyboard are forwarded.
 
+### Video
+
+When the viewer's browser can decode H.264 (WebCodecs: Chrome, Edge,
+Vivaldi, Brave, Safari, recent Firefox), the host sends H.264 video instead
+of JPEG tiles. That is smoother and needs far less bandwidth: a window drag
+is a few Mbit/s instead of tens. Video is encoded with Cisco's OpenH264
+library, which Remoter downloads from Cisco on first use on Windows (about
+1 MB, kept in `%LocalAppData%\Remoter`; Cisco's H.264 patent license covers
+copies downloaded from them). On Linux install `libopenh264-7`. The codec is
+tried in a child process before it is used, and anything that goes wrong
+falls back to JPEG tiles.
+
+Browsers only offer WebCodecs on HTTPS or localhost. Over plain
+`http://<tailscale-ip>:8080`, add the address to
+`chrome://flags/#unsafely-treat-insecure-origin-as-secure` (see below), or the
+viewer stays on JPEG. `-bitrate` sets the target in kbit/s (default 8000),
+`-no-video` turns video off.
+
 The protocol is in [`internal/protocol`](internal/protocol/protocol.go).
 
 ## Try it

@@ -223,7 +223,9 @@ func download(ctx context.Context, client *http.Client, asset *Asset, dst string
 func checkVersion(ctx context.Context, path, tag string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "-version").Output()
+	cmd := exec.CommandContext(ctx, path, "-version")
+	HideWindow(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("new version does not start: %w", err)
 	}

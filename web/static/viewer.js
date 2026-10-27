@@ -28,11 +28,17 @@ function connect(id, password) {
   let lastError = "";
   // Updates must be drawn in order, since each one only paints what changed.
   let drawing = Promise.resolve();
+  const video = videoStream(sock);
 
   ws.onopen = () => ws.send(JSON.stringify({ type: "connect", id, password }));
   ws.onmessage = (ev) => {
     if (typeof ev.data !== "string") {
       const data = ev.data;
+      if (new Uint8Array(data, 0, 1)[0] === 0x56) { // 'V'
+        video.push(data);
+        return;
+      }
+      video.reset(); // back on JPEG tiles
       drawing = drawing.then(() => drawUpdate(sock, data)).catch((err) => console.error(err));
       return;
     }
@@ -45,7 +51,9 @@ function connect(id, password) {
       checkBuild();
       $("connect-view").hidden = true;
       $("session-view").hidden = false;
-      ws.send(JSON.stringify({ type: "refresh" }));
+      videoSupported.then((v) => {
+        if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "refresh", video: v }));
+      });
       canvas.focus();
     } else if (msg.type === "cursor") {
       canvas.style.cursor = msg.cursor;
@@ -58,6 +66,7 @@ function connect(id, password) {
     }
   };
   ws.onclose = () => {
+    video.reset();
     if (ws !== sock) return;
     ws = null;
     held.clear();
@@ -127,13 +136,95 @@ async function drawUpdate(sock, buf) {
   if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "ack", seq }));
   stats.frames++;
   stats.bytes += buf.byteLength;
+  stats.mode = "JPEG";
+}
+
+// H.264 video, decoded with WebCodecs. Browsers only offer WebCodecs on
+// HTTPS or localhost (or an address the browser was told to trust); without
+// it the host sends JPEG tiles instead.
+const videoSupported = (async () => {
+  if (!window.VideoDecoder) return false;
+  try {
+    return !!(await VideoDecoder.isConfigSupported({ codec: "avc1.42E01F", optimizeForLatency: true })).supported;
+  } catch {
+    return false;
+  }
+})();
+
+function videoStream(sock) {
+  let decoder = null;
+  let codec = "";
+  const ack = (seq) => {
+    if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "ack", seq }));
+  };
+  const reset = () => {
+    if (decoder && decoder.state !== "closed") decoder.close();
+    decoder = null;
+    codec = "";
+  };
+  const open = (c) => {
+    reset();
+    decoder = new VideoDecoder({
+      output: (frame) => {
+        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+          canvas.width = frame.displayWidth;
+          canvas.height = frame.displayHeight;
+          applyScale();
+        }
+        ctx2d.drawImage(frame, 0, 0);
+        ack(frame.timestamp);
+        frame.close();
+        stats.frames++;
+      },
+      error: (err) => {
+        // Fall back to JPEG for this session.
+        console.error("video decoder:", err);
+        decoder = null;
+        if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "refresh", video: false }));
+      },
+    });
+    decoder.configure({ codec: c, optimizeForLatency: true });
+    codec = c;
+  };
+  return {
+    reset,
+    push(buf) {
+      const dv = new DataView(buf);
+      const seq = dv.getUint32(1, true);
+      const key = (dv.getUint8(9) & 1) !== 0;
+      const data = new Uint8Array(buf, 10);
+      stats.bytes += buf.byteLength;
+      stats.mode = "H.264";
+      if (key) {
+        const c = codecFromSPS(data);
+        if (c && (c !== codec || !decoder || decoder.state === "closed")) open(c);
+      }
+      if (!decoder || decoder.state !== "configured") {
+        ack(seq); // nothing to draw it with yet; keep the host moving
+        return;
+      }
+      decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: seq, data }));
+    },
+  };
+}
+
+// codecFromSPS builds the WebCodecs codec string ("avc1.PPCCLL") from the
+// sequence parameter set at the start of a key frame.
+function codecFromSPS(data) {
+  for (let i = 0; i + 7 < data.length; i++) {
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1 && (data[i + 3] & 0x1f) === 7) {
+      const hex = (b) => b.toString(16).padStart(2, "0");
+      return `avc1.${hex(data[i + 4])}${hex(data[i + 5])}${hex(data[i + 6])}`;
+    }
+  }
+  return "";
 }
 
 // Frame rate and bandwidth, shown next to the session label.
-const stats = { frames: 0, bytes: 0 };
+const stats = { frames: 0, bytes: 0, mode: "" };
 setInterval(() => {
   if (!ws) return;
-  $("stats").textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbit/s`;
+  $("stats").textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbit/s · ${stats.mode}`;
   stats.frames = 0;
   stats.bytes = 0;
 }, 1000);

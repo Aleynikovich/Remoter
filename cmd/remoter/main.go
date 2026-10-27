@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/aleynikovich/remoter/internal/h264"
 	"github.com/aleynikovich/remoter/internal/relay"
 	"github.com/aleynikovich/remoter/internal/update"
 	"github.com/aleynikovich/remoter/web"
@@ -38,6 +39,8 @@ func main() {
 	flag.BoolVar(&ho.test, "test-pattern", false, "stream a generated test pattern instead of the screen")
 	flag.BoolVar(&ho.viewOnly, "view-only", false, "let viewers watch but not control this computer")
 	flag.BoolVar(&ho.noClipboard, "no-clipboard", false, "do not share the clipboard with viewers")
+	flag.BoolVar(&ho.noVideo, "no-video", false, "send JPEG images instead of H.264 video")
+	flag.IntVar(&ho.kbps, "bitrate", 8000, "H.264 target bit rate in kbit/s")
 	noUpdate := flag.Bool("no-update", false, "do not update automatically")
 	checkEvery := flag.Duration("update-interval", 2*time.Minute, "how often to look for a new version")
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -45,7 +48,15 @@ func main() {
 	background := flag.Bool("background", false, "run without a window (what starting Remoter normally does on Windows)")
 	stopFlag := flag.Bool("stop", false, "stop the Remoter running on this computer")
 	noAutostart := flag.Bool("no-autostart", false, "Windows: do not start Remoter when you log in")
+	selfTest := flag.Bool("h264-selftest", false, "check that the H.264 codec works, then exit (used internally)")
 	flag.Parse()
+
+	if *selfTest {
+		if err := h264.SelfTest(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	if *showVersion {
 		fmt.Println(version())
