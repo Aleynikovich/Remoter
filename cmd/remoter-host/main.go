@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/kbinani/screenshot"
+
 	"github.com/aleynikovich/remoter/internal/capture"
 	"github.com/aleynikovich/remoter/internal/host"
+	"github.com/aleynikovich/remoter/internal/input"
 )
 
 func main() {
@@ -20,11 +23,20 @@ func main() {
 	quality := flag.Int("quality", 70, "JPEG quality 1-100")
 	display := flag.Int("display", 0, "display index to share")
 	test := flag.Bool("test-pattern", false, "stream a generated test pattern instead of the screen")
+	viewOnly := flag.Bool("view-only", false, "let viewers watch but not control this computer")
 	flag.Parse()
 
 	var src capture.Source = capture.Screen{Display: *display}
+	var in host.InputHandler = input.Log{}
 	if *test {
 		src = capture.TestPattern{}
+	} else if !*viewOnly {
+		native, err := input.New(screenshot.GetDisplayBounds(*display))
+		if err != nil {
+			log.Printf("remote control disabled: %v", err)
+		} else {
+			in = native
+		}
 	}
 	if *password == "" {
 		*password = host.RandomPassword()
@@ -34,6 +46,7 @@ func main() {
 		ServerURL: *server,
 		Password:  *password,
 		Source:    src,
+		Input:     in,
 		FPS:       *fps,
 		Quality:   *quality,
 		OnRegistered: func(id string) {

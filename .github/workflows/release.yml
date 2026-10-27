@@ -1,0 +1,40 @@
+name: Release
+# Version tags (v1.2.3) publish a release. Pushes to main and to work
+# branches publish a numbered dev prerelease so builds can be tried before a
+# version is cut.
+on:
+  push:
+    tags: ["v*"]
+    branches: [main, "claude/**"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir dist
+          for target in windows/amd64 linux/amd64; do
+            os=${target%/*}; arch=${target#*/}
+            ext=""; [ "$os" = windows ] && ext=".exe"
+            for cmd in remoter-server remoter-host; do
+              GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" \
+                -o "dist/${cmd}-${os}-${arch}${ext}" ./cmd/$cmd
+            done
+          done
+          ls -l dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Dev build {0} ({1})', github.run_number, github.ref_name) }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ github.ref_type != 'tag' || contains(github.ref_name, '-') }}
+          generate_release_notes: true
