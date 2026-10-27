@@ -15,20 +15,18 @@ function connect(id, password) {
   setStatus("Connecting…");
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/ws/viewer`);
-  ws.binaryType = "blob";
+  const sock = ws;
+  sock.binaryType = "arraybuffer";
   let connected = false;
   let lastError = "";
+  // Updates must be drawn in order, since each one only paints what changed.
+  let drawing = Promise.resolve();
 
   ws.onopen = () => ws.send(JSON.stringify({ type: "connect", id, password }));
-  ws.onmessage = async (ev) => {
+  ws.onmessage = (ev) => {
     if (typeof ev.data !== "string") {
-      const bmp = await createImageBitmap(ev.data);
-      if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
-        canvas.width = bmp.width;
-        canvas.height = bmp.height;
-      }
-      ctx2d.drawImage(bmp, 0, 0);
-      bmp.close();
+      const data = ev.data;
+      drawing = drawing.then(() => drawUpdate(sock, data)).catch((err) => console.error(err));
       return;
     }
     const msg = JSON.parse(ev.data);
@@ -37,6 +35,7 @@ function connect(id, password) {
       $("session-label").textContent = `Connected to ${msg.id}`;
       $("connect-view").hidden = true;
       $("session-view").hidden = false;
+      ws.send(JSON.stringify({ type: "refresh" }));
       canvas.focus();
     } else if (msg.type === "error") {
       lastError = msg.error;
@@ -49,6 +48,46 @@ function connect(id, password) {
     ws = null;
   };
 }
+
+// Screen updates: a header, then JPEG rectangles to paint over the last
+// picture. See internal/stream for the layout.
+async function drawUpdate(sock, buf) {
+  const dv = new DataView(buf);
+  if (dv.getUint8(0) !== 0x55) return; // 'U'
+  const seq = dv.getUint32(1, true);
+  const width = dv.getUint16(5, true), height = dv.getUint16(7, true);
+  const count = dv.getUint16(9, true);
+  const rects = [];
+  let off = 11;
+  for (let i = 0; i < count; i++) {
+    const x = dv.getUint16(off, true), y = dv.getUint16(off + 2, true);
+    const len = dv.getUint32(off + 8, true);
+    const blob = new Blob([new Uint8Array(buf, off + 12, len)], { type: "image/jpeg" });
+    rects.push({ x, y, blob });
+    off += 12 + len;
+  }
+  const bitmaps = await Promise.all(rects.map((r) => createImageBitmap(r.blob)));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  rects.forEach((r, i) => {
+    ctx2d.drawImage(bitmaps[i], r.x, r.y);
+    bitmaps[i].close();
+  });
+  if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "ack", seq }));
+  stats.frames++;
+  stats.bytes += buf.byteLength;
+}
+
+// Frame rate and bandwidth, shown next to the session label.
+const stats = { frames: 0, bytes: 0 };
+setInterval(() => {
+  if (!ws) return;
+  $("stats").textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbit/s`;
+  stats.frames = 0;
+  stats.bytes = 0;
+}, 1000);
 
 function setStatus(text) {
   $("status").textContent = text;

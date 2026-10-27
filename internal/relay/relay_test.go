@@ -16,6 +16,7 @@ import (
 	"github.com/aleynikovich/remoter/internal/host"
 	"github.com/aleynikovich/remoter/internal/protocol"
 	"github.com/aleynikovich/remoter/internal/relay"
+	"github.com/aleynikovich/remoter/internal/stream"
 )
 
 type inputRecorder chan protocol.Input
@@ -95,19 +96,17 @@ func TestViewerReceivesFramesAndSendsInput(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typ, frame, err := c.Read(ctx)
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+	u := readUpdate(t, c)
+	if !u.Full() || u.Width != 64 || u.Height != 48 {
+		t.Fatalf("first update is %dx%d full=%v, want the whole 64x48 screen", u.Width, u.Height, u.Full())
+	}
+	img, err := jpeg.Decode(bytes.NewReader(u.Rects[0].JPEG))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("rect is not a JPEG: %v", err)
 	}
-	if typ != websocket.MessageBinary {
-		t.Fatalf("got message type %v, want binary frame", typ)
-	}
-	img, err := jpeg.Decode(bytes.NewReader(frame))
-	if err != nil {
-		t.Fatalf("frame is not a JPEG: %v", err)
-	}
-	if b := img.Bounds(); b.Dx() != 64 || b.Dy() != 48 {
-		t.Fatalf("frame size %v, want 64x48", b)
+	if b := img.Bounds(); b.Dx() != u.Rects[0].Dx() || b.Dy() != u.Rects[0].Dy() {
+		t.Fatalf("rect %v holds a %v image", u.Rects[0].Rectangle, b)
 	}
 
 	msg, _ := json.Marshal(protocol.Message{Type: protocol.TypeInput, Input: &protocol.Input{Kind: "mousedown", X: 0.5, Y: 0.25}})
@@ -121,6 +120,56 @@ func TestViewerReceivesFramesAndSendsInput(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("host did not receive input")
+	}
+}
+
+func sendJSON(t *testing.T, c *websocket.Conn, m protocol.Message) {
+	t.Helper()
+	data, _ := json.Marshal(m)
+	if err := c.Write(context.Background(), websocket.MessageText, data); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readUpdate(t *testing.T, c *websocket.Conn) *stream.Update {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	typ, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ != websocket.MessageBinary {
+		t.Fatalf("got message type %v, want binary update", typ)
+	}
+	u, err := stream.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+func TestHostWaitsForAcks(t *testing.T) {
+	base, id := startHost(t, "secret", nil)
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+
+	for range 3 {
+		readUpdate(t, c)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	_, _, err := c.Read(ctx)
+	cancel()
+	if err == nil {
+		t.Fatal("host sent a 4th update without an ack")
+	}
+	// The timed-out read closed the connection, so reconnect to check
+	// that acks let updates through again.
+	c, _ = dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+	for range 10 {
+		u := readUpdate(t, c)
+		sendJSON(t, c, protocol.Message{Type: protocol.TypeAck, Seq: u.Seq})
 	}
 }
 

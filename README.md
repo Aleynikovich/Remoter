@@ -22,8 +22,12 @@ screen, let someone control it, and connect with a 9-digit ID and a password.
   minute.
 * **remoter-host** runs on the computer being shared. It prints its ID and a
   random password, checks passwords itself (the server only passes them
-  through), captures the screen as JPEG frames while someone is watching, and
-  receives mouse and keyboard events.
+  through), captures the screen while someone is watching, and receives mouse
+  and keyboard events. It compares each capture with the last one in 64×64
+  tiles and sends only the tiles that changed, as JPEG. Tiles that stop
+  changing are resent once at higher quality so text ends up sharp. Viewers
+  acknowledge each update, and the host never runs more than three updates
+  ahead, so a slow link lowers the frame rate instead of adding lag.
 * **web viewer** is a plain HTML/JS page: type the ID and password, see the
   screen, and your mouse and keyboard are forwarded.
 
@@ -72,7 +76,8 @@ go test -race ./...
 | `cmd/remoter-host` | host agent binary |
 | `internal/relay` | rendezvous, auth forwarding, frame/input relay |
 | `internal/host` | host agent session logic |
-| `internal/capture` | screen and test-pattern sources |
+| `internal/capture` | screen and test-pattern sources (Windows: reusable GDI capture) |
+| `internal/stream` | changed-tile detection and the binary screen update format |
 | `internal/input` | applies mouse/keyboard on the host (Windows: SendInput) |
 | `internal/protocol` | wire messages |
 | `web/static` | browser viewer |

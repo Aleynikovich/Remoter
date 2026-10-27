@@ -19,14 +19,14 @@ import (
 func main() {
 	server := flag.String("server", "ws://localhost:8080/ws/host", "relay host endpoint")
 	password := flag.String("password", "", "session password (random if empty)")
-	fps := flag.Int("fps", 10, "frames per second")
-	quality := flag.Int("quality", 70, "JPEG quality 1-100")
+	fps := flag.Int("fps", 30, "maximum frames per second")
+	quality := flag.Int("quality", 60, "JPEG quality 1-100 for changing areas (still areas are resent sharper)")
 	display := flag.Int("display", 0, "display index to share")
 	test := flag.Bool("test-pattern", false, "stream a generated test pattern instead of the screen")
 	viewOnly := flag.Bool("view-only", false, "let viewers watch but not control this computer")
 	flag.Parse()
 
-	var src capture.Source = capture.Screen{Display: *display}
+	var src capture.Source = &capture.Screen{Display: *display}
 	var in host.InputHandler = input.Log{}
 	if *test {
 		src = capture.TestPattern{}

@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"log"
 	"time"
 
 	"github.com/kbinani/screenshot"
@@ -16,13 +17,37 @@ type Source interface {
 	Capture() (image.Image, error)
 }
 
-// Screen captures a physical display.
+// Screen captures a physical display. It uses a faster platform-specific
+// capturer where there is one and falls back to a generic one.
 type Screen struct {
 	Display int
+
+	native  nativeSource
+	started bool
+	logged  bool
+}
+
+type nativeSource interface {
+	Capture() (image.Image, error)
 }
 
 // Capture grabs the whole display.
-func (s Screen) Capture() (image.Image, error) {
+func (s *Screen) Capture() (image.Image, error) {
+	if !s.started {
+		s.started = true
+		s.native = newNative(s.Display)
+	}
+	if s.native != nil {
+		img, err := s.native.Capture()
+		if err == nil {
+			s.logged = false
+			return img, nil
+		}
+		if !s.logged {
+			s.logged = true
+			log.Printf("fast capture failed (%v), using fallback", err)
+		}
+	}
 	if screenshot.NumActiveDisplays() <= s.Display {
 		return nil, errors.New("display not found")
 	}

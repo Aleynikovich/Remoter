@@ -31,9 +31,11 @@ const (
 	// maxFailures wrong passwords for one ID lock that ID for lockout.
 	maxFailures = 5
 	lockout     = time.Minute
-	// frameBuffer is how many frames may queue per viewer before old ones are
-	// dropped. Dropping keeps a slow viewer from stalling the host.
-	frameBuffer = 2
+	// frameBuffer is how many screen updates may queue per viewer. Updates
+	// only carry what changed, so none may be dropped; the host waits for acks
+	// to stay within this, and a viewer that overflows it is disconnected
+	// rather than allowed to stall the host.
+	frameBuffer = 16
 	maxMessage  = 16 << 20
 )
 
@@ -60,9 +62,10 @@ type host struct {
 }
 
 type viewer struct {
-	id     string
-	conn   *websocket.Conn
-	frames chan []byte
+	id      string
+	conn    *websocket.Conn
+	frames  chan []byte
+	tooSlow bool // guarded by host.mu
 }
 
 // New returns an empty relay server.
@@ -204,7 +207,10 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var m protocol.Message
-		if json.Unmarshal(data, &m) != nil || m.Type != protocol.TypeInput || m.Input == nil {
+		if json.Unmarshal(data, &m) != nil || !protocol.FromViewer(m.Type) {
+			continue
+		}
+		if m.Type == protocol.TypeInput && m.Input == nil {
 			continue
 		}
 		m.Viewer = v.id
@@ -328,23 +334,21 @@ func (h *host) removeViewer(v *viewer) {
 	}
 }
 
-// broadcast queues a frame for every viewer, dropping the oldest queued frame
-// for viewers that are falling behind.
+// broadcast queues an update for every viewer. A viewer whose queue is full
+// has stopped keeping up and is disconnected.
 func (h *host) broadcast(frame []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, v := range h.viewers {
-		for {
-			select {
-			case v.frames <- frame:
-			default:
-				select {
-				case <-v.frames:
-				default:
-				}
-				continue
-			}
-			break
+		if v.tooSlow {
+			continue
+		}
+		select {
+		case v.frames <- frame:
+		default:
+			v.tooSlow = true
+			log.Printf("viewer %s of host %s is too slow, disconnecting", v.id, h.id)
+			go v.conn.Close(websocket.StatusTryAgainLater, "connection too slow")
 		}
 	}
 }
