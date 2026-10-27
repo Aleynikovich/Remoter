@@ -112,7 +112,7 @@ func (s *Server) serveHost(w http.ResponseWriter, r *http.Request) {
 		viewers: make(map[string]*viewer),
 		pending: make(map[string]chan bool),
 	}
-	if err := s.addHost(h); err != nil {
+	if err := s.addHost(h, reg.ID); err != nil {
 		conn.Close(websocket.StatusInternalError, err.Error())
 		return
 	}
@@ -241,9 +241,18 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) addHost(h *host) error {
+// addHost gives h a session ID: preferred if it is a free 9-digit ID (a host
+// reconnecting after a restart keeps its ID), otherwise a random one.
+func (s *Server) addHost(h *host, preferred string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if n, err := strconv.Atoi(preferred); err == nil && n >= 100_000_000 && n <= 999_999_999 {
+		if _, taken := s.hosts[preferred]; !taken {
+			h.id = preferred
+			s.hosts[preferred] = h
+			return nil
+		}
+	}
 	for range 100 {
 		n, err := rand.Int(rand.Reader, big.NewInt(900_000_000))
 		if err != nil {

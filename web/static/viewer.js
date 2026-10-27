@@ -4,15 +4,22 @@ const $ = (id) => document.getElementById(id);
 const canvas = $("screen");
 const ctx2d = canvas.getContext("2d");
 let ws = null;
+// While a session is open, a dropped connection (the host updating itself,
+// a network blip) is retried for a minute before giving up.
+let session = null; // { id, password, retryUntil }
 
 $("connect-form").addEventListener("submit", (e) => {
   e.preventDefault();
+  session = null;
   connect($("id").value.replace(/\s+/g, ""), $("password").value);
 });
-$("disconnect").addEventListener("click", () => ws && ws.close());
+$("disconnect").addEventListener("click", () => {
+  session = null;
+  if (ws) ws.close();
+});
 
 function connect(id, password) {
-  setStatus("Connecting…");
+  if (!session) setStatus("Connecting…");
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/ws/viewer`);
   const sock = ws;
@@ -32,6 +39,8 @@ function connect(id, password) {
     const msg = JSON.parse(ev.data);
     if (msg.type === "connected") {
       connected = true;
+      session = { id, password, retryUntil: 0 };
+      $("notice").textContent = "";
       $("session-label").textContent = `Connected to ${msg.id}`;
       $("connect-view").hidden = true;
       $("session-view").hidden = false;
@@ -48,11 +57,27 @@ function connect(id, password) {
     }
   };
   ws.onclose = () => {
+    if (ws !== sock) return;
+    ws = null;
+    held.clear();
+    if (session && retry()) return;
+    session = null;
     $("session-view").hidden = true;
     $("connect-view").hidden = false;
     setStatus(lastError || (connected ? "Session ended." : "Could not reach the server."));
-    ws = null;
   };
+}
+
+// retry schedules another attempt to reopen the current session, keeping the
+// last picture on screen, and reports whether it did.
+function retry() {
+  const now = Date.now();
+  if (!session.retryUntil) session.retryUntil = now + 60_000;
+  if (now > session.retryUntil) return false;
+  $("notice").textContent = "Connection lost, reconnecting…";
+  const { id, password } = session;
+  setTimeout(() => { if (session && !ws) connect(id, password); }, 1000);
+  return true;
 }
 
 // Screen updates: a header, then JPEG rectangles to paint over the last

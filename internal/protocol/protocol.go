@@ -11,7 +11,9 @@ package protocol
 
 // Message types.
 const (
-	// host -> server: ask for a session ID.
+	// host -> server: ask for a session ID. ID, if set, is the one the host
+	// would like to keep (it had it before a restart); the server uses it if
+	// it is free.
 	TypeRegister = "register"
 	// server -> host: the assigned session ID.
 	TypeRegistered = "registered"
