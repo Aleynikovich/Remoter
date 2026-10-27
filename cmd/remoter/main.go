@@ -81,8 +81,11 @@ func main() {
 	// The flags the user chose, kept for restarts and for starting at login.
 	userArgs := withoutFlags(os.Args[1:], "background", "console")
 	if backgroundSupported && !*console && !*background {
-		launch(*addr, runServer, ho.password, userArgs)
-		return
+		if launch(*addr, runServer, ho.password, userArgs) {
+			return
+		}
+		fmt.Println("Running in this window instead.")
+		*console = true
 	}
 	if *background {
 		if f, err := openLog(); err == nil {

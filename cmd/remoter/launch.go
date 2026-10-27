@@ -25,20 +25,22 @@ import (
 const stopHeader = "X-Remoter-Stop"
 
 // launch starts the background copy, replacing one that runs another build,
-// and tells the user what happened.
-func launch(addr string, server bool, password string, args []string) {
-	defer pause()
+// and tells the user what happened. It reports false if no background copy
+// could be started, and the caller then runs in this window instead, so the
+// computer stays reachable.
+func launch(addr string, server bool, password string, args []string) bool {
 	exe, err := update.Executable()
 	if err != nil {
-		fmt.Println("Could not start Remoter:", err)
-		return
+		fmt.Println("Could not start Remoter in the background:", err)
+		return false
 	}
 	if server {
 		if v, ok := runningVersion(addr); ok {
 			if v == version() {
 				fmt.Printf("Remoter %s is already running in the background.\n", v)
 				printInfo(addr, password)
-				return
+				pause()
+				return true
 			}
 			fmt.Printf("Replacing the running Remoter %s with %s.\n", v, version())
 			if err := stopRunning(addr); err != nil {
@@ -48,12 +50,13 @@ func launch(addr string, server bool, password string, args []string) {
 	}
 	if err := startDetached(exe, append(args, "-background"), os.Environ()); err != nil {
 		fmt.Println("Could not start Remoter in the background:", err)
-		return
+		return false
 	}
+	defer pause()
 	if !server {
 		fmt.Printf("Remoter %s is running in the background.\n", version())
 		printInfo(addr, password)
-		return
+		return true
 	}
 	// Wait until it serves. If an older Remoter without this launcher still
 	// holds the port, the background copy takes over once that is closed.
@@ -72,6 +75,7 @@ func launch(addr string, server bool, password string, args []string) {
 	}
 	fmt.Printf("Remoter %s is running in the background.\n", version())
 	printInfo(addr, password)
+	return true
 }
 
 func printInfo(addr, password string) {
