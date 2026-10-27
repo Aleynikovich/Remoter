@@ -57,7 +57,19 @@ when several are connected.
 
 Flags: `-mode`, `-addr`, `-server`, `-password`, `-fps`, `-quality`,
 `-display`, `-view-only`, `-no-clipboard`, `-test-pattern`, `-no-update`,
-`-update-interval`, `-version`.
+`-update-interval`, `-version`, `-console`, `-stop`, `-no-autostart`.
+
+### Running in the background (Windows)
+
+On Windows the window you start Remoter from only launches it: Remoter
+itself runs in the background with no window, so closing the window never
+drops the connection, and it adds itself to the programs Windows starts when
+you log in. The window says where it logs (`%LOCALAPPDATA%\Remoter\remoter.log`).
+Starting it again while it runs does nothing if it is the same build, and
+replaces the running copy if it is a different one. If an older Remoter
+still holds the port, the new one waits and takes over once that is closed.
+`remoter -stop` stops it (`-stop -no-autostart` also stops starting it at
+login), and `-console` runs it in the window as before.
 
 ### Updates
 
