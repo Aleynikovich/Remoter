@@ -5,14 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"log"
 	"os"
 	"os/exec"
 	"runtime"
 	"sync/atomic"
 	"time"
-
-	"github.com/kbinani/screenshot"
 
 	"github.com/aleynikovich/remoter/internal/capture"
 	"github.com/aleynikovich/remoter/internal/clipboard"
@@ -56,7 +55,7 @@ func newAgent(o hostOptions) *host.Agent {
 		src = capture.TestPattern{}
 	} else {
 		if !o.viewOnly {
-			native, err := input.New(screenshot.GetDisplayBounds(o.display))
+			native, err := input.New(displayBounds(o.display))
 			if err != nil {
 				log.Printf("remote control disabled: %v", err)
 			} else {
@@ -174,14 +173,24 @@ type monitors struct {
 	input  input.Handler
 }
 
-func (m monitors) Count() int   { return screenshot.NumActiveDisplays() }
+func (m monitors) Count() int   { return len(capture.Displays()) }
 func (m monitors) Current() int { return m.screen.Display() }
 
 func (m monitors) Select(display int) error {
-	if display < 0 || display >= screenshot.NumActiveDisplays() {
+	if display < 0 || display >= len(capture.Displays()) {
 		return errors.New("no such display")
 	}
-	m.input.SetDisplay(screenshot.GetDisplayBounds(display))
+	m.input.SetDisplay(displayBounds(display))
 	m.screen.SetDisplay(display)
 	return nil
+}
+
+// displayBounds is the area of the display in input coordinates, or an empty
+// rectangle when it is not there (yet: a service can start before the
+// desktop).
+func displayBounds(display int) image.Rectangle {
+	if ds := capture.Displays(); display < len(ds) {
+		return ds[display]
+	}
+	return image.Rectangle{}
 }

@@ -4,8 +4,6 @@ package capture
 
 import "errors"
 
-func newNative(int) nativeSource { return nil }
-
 // EnableDXGI does nothing outside Windows.
 func EnableDXGI() {}
 
