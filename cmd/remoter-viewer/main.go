@@ -5,6 +5,8 @@
 // desktop shortcuts included.
 //
 //	remoter-viewer [-password root] [-id 123456789] [-fullscreen] [server:port]
+//	remoter-viewer phone [ip]       mirror and control an Android phone
+//	remoter-viewer phone-shot [ip]  copy a screenshot of the phone and save it
 //
 // Started with a server address it connects straight away; otherwise it
 // shows a connect screen filled in with the last session's settings.
@@ -40,6 +42,16 @@ func init() {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "phone":
+			phoneMain(os.Args[2:])
+			return
+		case "phone-shot":
+			phoneShotMain(os.Args[2:])
+			return
+		}
+	}
 	password := flag.String("password", "", "session password (default: the last one used)")
 	id := flag.String("id", "", "computer ID, if the server has more than one")
 	fullscreen := flag.Bool("fullscreen", false, "start full screen")

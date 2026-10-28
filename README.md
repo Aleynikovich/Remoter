@@ -176,6 +176,42 @@ away.
 * `-jpeg` asks for JPEG tiles instead of video, `-fullscreen` starts full
   screen, `-no-update` stops updates.
 
+### Mirroring an Android phone
+
+The desktop viewer also shows an Android phone's screen and controls it with
+the mouse and keyboard, without root and without installing anything on the
+phone. It works like [scrcpy](https://github.com/Genymobile/scrcpy) (Apache
+2.0), whose server it runs: the viewer pushes scrcpy's server to the phone
+over ADB wireless debugging, which reaches the phone over Tailscale too. The
+server streams the screen as H.264 and injects the taps and keys. The server
+comes from scrcpy's GitHub release on first use, with its checksum pinned.
+
+* Install ADB on the computer (Debian/Ubuntu: `sudo apt install adb`, Arch:
+  `pacman -S android-tools`, Windows: `winget install Google.PlatformTools`).
+* Phones appear in the viewer's Tailscale list; pick one and it opens in its
+  own window (or run `remoter-viewer phone 100.95.169.40`).
+* The first time, the window asks you to pair: on the phone, open
+  Developer options › Wireless debugging and turn it on. Type the port shown
+  under "IP address & Port", then tap "Pair device with pairing code" and
+  type that dialog's port and code. The viewer then moves the phone's ADB to
+  port 5555, so it reconnects by itself until the phone restarts. After a
+  restart, turn Wireless debugging on again and type its port (no new code).
+* Click to tap, drag to swipe, the wheel scrolls, right-click is Back and
+  middle-click is Home. Typing goes to the phone in your keyboard's layout,
+  and Ctrl+V pastes this computer's clipboard there. What you copy on the
+  phone lands on this computer's clipboard.
+* **Ctrl+Alt+S** saves a full-resolution screenshot to `Pictures/Remoter`
+  and copies it to the clipboard (Linux needs `wl-clipboard` on Wayland or
+  `xclip` on X11 for the copy). `remoter-viewer phone-shot` does the same
+  without the window, for a desktop hotkey, e.g. in `hyprland.conf`:
+  `bind = SUPER SHIFT, P, exec, remoter-viewer phone-shot`.
+* Ctrl+Alt+H Home, B Back, R recent apps, N notifications, P power, O turns
+  the phone's own screen off (or back on) while mirroring goes on, Up/Down
+  volume, Enter full screen.
+* Apps that block screen capture (banking apps such as Revolut, or anything
+  that sets `FLAG_SECURE`) show black, in the mirror and in screenshots.
+  Android does that for every capture method on a phone without root.
+
 ### Linux viewers with a tiling compositor (Hyprland, Sway...)
 
 The desktop viewer above handles this by itself. In a browser, the
@@ -225,3 +261,4 @@ go test -race ./...
 | `web/static` | browser viewer |
 | `cmd/remoter-viewer` | desktop viewer for Linux and Windows (SDL 2 and FFmpeg or OpenH264 loaded at run time) |
 | `internal/viewer` | desktop viewer connection, Tailscale device list, key map and settings |
+| `internal/phone` | Android phone mirroring: ADB, scrcpy server protocol, screenshots |

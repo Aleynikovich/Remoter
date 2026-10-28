@@ -28,6 +28,7 @@ func videoDecoders() (func() (videoDecoder, error), error) {
 		return newAVDecoder, nil
 	}
 	if err := h264.Load(); err == nil {
+		openH264Only = true
 		return newOpenH264Decoder, nil
 	}
 	return nil, fmt.Errorf("%w; OpenH264 is not installed either", avErr)

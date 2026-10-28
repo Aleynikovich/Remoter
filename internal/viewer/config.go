@@ -14,6 +14,10 @@ type Config struct {
 	// Passwords remembers what worked for each server, for computers
 	// that do not use the default one.
 	Passwords map[string]string `json:"passwords,omitempty"`
+	// Phone is the Tailscale address of the phone last mirrored, and
+	// PhonePort its wireless debugging port then.
+	Phone     string `json:"phone,omitempty"`
+	PhonePort string `json:"phonePort,omitempty"`
 }
 
 // PasswordFor is the password to try for server: the one that worked last

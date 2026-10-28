@@ -26,6 +26,10 @@ type yuvPicture struct {
 	pitches [3]int32
 }
 
+// openH264Only is set when OpenH264 is the decoder. It handles only some
+// of the H.264 profiles phones encode, so phones are asked for Baseline.
+var openH264Only bool
+
 // openH264Decoder decodes with Cisco's OpenH264, the library the host
 // encodes with.
 type openH264Decoder struct {

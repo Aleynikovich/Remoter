@@ -81,11 +81,16 @@ func frame(img draw.Image, r image.Rectangle, width int, c color.Color) {
 
 // form is the connect screen.
 type form struct {
-	labels [3]string
-	values [3]string
-	focus  int // 0..2 a field, 3 the Connect button
-	status string
-	err    bool
+	heading, sub string   // title and the line under it
+	lines        []string // instructions, between the title and the fields
+	button       string
+	hint         string // keys, along the bottom of the window
+	secret       int    // the field shown as dots, or -1
+	labels       [3]string
+	values       [3]string
+	focus        int // 0..2 a field, 3 the button
+	status       string
+	err          bool
 
 	// Where things were drawn, for clicks, in output pixels.
 	hit [4]image.Rectangle
@@ -94,7 +99,11 @@ type form struct {
 const fieldPassword = 2
 
 func newForm(server, id, password string) *form {
-	f := &form{labels: [3]string{"Server", "Computer ID (empty for the only one)", "Password"}}
+	f := &form{
+		heading: "Remoter", sub: "Connect to a computer", button: "Connect", secret: fieldPassword,
+		hint:   "Tab: next field  ·  Enter: connect  ·  Esc: back to the device list",
+		labels: [3]string{"Server", "Computer ID (empty for the only one)", "Password"},
+	}
 	f.values = [3]string{server, id, password}
 	// With everything remembered, Enter connects straight away.
 	if server == "" {
@@ -115,17 +124,26 @@ func (f *form) draw(out image.Point, s float64) *image.RGBA {
 	title, body, small := face(px(28)), face(px(15)), face(px(13))
 	w := min(px(440), out.X-px(32))
 	fieldH, gap := px(38), px(14)
-	h := px(120) + 3*(px(22)+fieldH+gap) + fieldH + px(70)
+	var lines []string
+	for _, l := range f.lines {
+		lines = append(lines, wrap(small, l, w-px(56))...)
+	}
+	status := wrap(small, f.status, w-px(56))
+	h := px(120) + (len(lines)+len(status)-1)*px(20) + 3*(px(22)+fieldH+gap) + fieldH + px(70)
 	panel := image.Rect((out.X-w)/2, max((out.Y-h)/2, px(16)), (out.X+w)/2, 0)
 	panel.Max.Y = panel.Min.Y + h
 	fill(img, panel, colPanel)
 
 	x, y := panel.Min.X+px(28), panel.Min.Y+px(52)
 	inner := w - px(56)
-	drawText(img, title, x, y, "Remoter", colText)
+	drawText(img, title, x, y, f.heading, colText)
 	y += px(28)
-	drawText(img, body, x, y, "Connect to a computer", colMuted)
+	drawText(img, body, x, y, f.sub, colMuted)
 	y += px(40)
+	for _, l := range lines {
+		drawText(img, small, x, y-px(10), l, colText)
+		y += px(20)
+	}
 
 	for i := range 3 {
 		drawText(img, small, x, y, f.labels[i], colMuted)
@@ -138,7 +156,7 @@ func (f *form) draw(out image.Point, s float64) *image.RGBA {
 		}
 		frame(img, r, max(bw, 1), border)
 		text := f.values[i]
-		if i == fieldPassword {
+		if i == f.secret {
 			text = strings.Repeat("•", len([]rune(text)))
 		}
 		if f.focus == i {
@@ -160,7 +178,7 @@ func (f *form) draw(out image.Point, s float64) *image.RGBA {
 	if f.focus == 3 {
 		frame(img, btn, max(px(2), 1), colText)
 	}
-	label := "Connect"
+	label := f.button
 	drawText(img, body, btn.Min.X+(inner-textWidth(body, label))/2, y+fieldH/2+px(5), label, colText)
 	f.hit[3] = btn
 	y += fieldH + px(28)
@@ -170,15 +188,37 @@ func (f *form) draw(out image.Point, s float64) *image.RGBA {
 		if f.err {
 			c = colError
 		}
-		drawText(img, small, x, y, f.status, c)
+		for _, l := range status {
+			drawText(img, small, x, y, l, c)
+			y += px(20)
+		}
 	}
 
-	hint := "Tab: next field  ·  Enter: connect  ·  Esc: back to the device list"
+	hint := f.hint
 	if textWidth(small, hint) > out.X-px(24) {
-		hint = "Enter: connect  ·  Esc: device list"
+		hint = "Tab: next field  ·  Enter: " + strings.ToLower(f.button)
 	}
 	drawText(img, small, (out.X-textWidth(small, hint))/2, out.Y-px(18), hint, colMuted)
 	return img
+}
+
+// wrap breaks s into lines at most width wide, at spaces.
+func wrap(f font.Face, s string, width int) []string {
+	var lines []string
+	line := ""
+	for _, word := range strings.Fields(s) {
+		if line != "" && textWidth(f, line+" "+word) > width {
+			lines = append(lines, line)
+			line = "   " + word // continuation lines are indented
+			continue
+		}
+		if line == "" {
+			line = word
+		} else {
+			line += " " + word
+		}
+	}
+	return append(lines, line)
 }
 
 func firstRune(s string) (rune, int) {
@@ -306,13 +346,15 @@ func (l *deviceList) draw(out image.Point, s float64) *image.RGBA {
 			switch {
 			case d.Remoter != "":
 				state = "Remoter " + d.Remoter + " · ready"
+			case d.Online && d.OS == "android":
+				state = "phone · mirror and control it"
 			case d.Online && l.scanned:
 				state = "Remoter not running"
 			case d.Online:
 				state = "online"
 			}
 			detail = strings.Join(slices.DeleteFunc([]string{os, d.IP, state}, func(s string) bool { return s == "" }), "  ·  ")
-			dim = !d.Online || d.Remoter == "" && l.scanned
+			dim = !d.Online || d.Remoter == "" && d.OS != "android" && l.scanned
 		}
 		c := colText
 		if dim {

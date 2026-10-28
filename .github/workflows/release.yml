@@ -2,13 +2,13 @@ name: Release
 # Version tags (v1.2.3) publish a release. Pushes to main and to work
 # branches publish a numbered dev prerelease so builds can be tried before a
 # version is cut. Hosts install the newest one, so branches that only work on
-# the Linux viewer are left out: their host binary would replace the one from
+# the desktop viewer are left out: their host binary would replace the one from
 # the branch that is actually changing the host. Their viewer is published by
 # viewer.yml.
 on:
   push:
     tags: ["v*"]
-    branches: [main, "claude/**", "!claude/project-thread-yv34xl"]
+    branches: [main, "claude/**", "!claude/project-thread-yv34xl", "!claude/project-thread-shn7nm"]
 permissions:
   contents: write
 jobs:

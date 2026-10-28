@@ -120,6 +120,7 @@ func videoDecoders() (func() (videoDecoder, error), error) {
 	if err := h264.Load(); err != nil {
 		return nil, err
 	}
+	openH264Only = true
 	return newOpenH264Decoder, nil
 }
 

@@ -441,6 +441,15 @@ func (a *app) openSelected() {
 		return
 	}
 	d := l.devices[l.selected]
+	if d.OS == "android" && d.Remoter == "" {
+		if err := openPhoneWindow(d.IP); err != nil {
+			l.status, l.isErr = "Cannot open the phone: "+err.Error(), true
+		} else {
+			l.status, l.isErr = "Opening "+d.Name+" in its own window…", false
+		}
+		a.dirty = true
+		return
+	}
 	// Hosts use the default password unless set otherwise, so computers
 	// on the tailnet open without asking.
 	a.form.values = [3]string{d.Addr(), "", a.cfg.PasswordFor(d.Addr())}
