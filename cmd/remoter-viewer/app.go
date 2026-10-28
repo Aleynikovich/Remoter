@@ -44,7 +44,11 @@ const (
 	scKPEnter  = 88
 	scV        = 25
 	scD        = 7
+	scQ        = 20
 )
+
+// qualities are the picture settings Ctrl+Alt+Q steps through.
+var qualities = []string{"auto", "sharp", "balanced", "smooth"}
 
 // SDL's system cursors for the CSS cursor names the host sends.
 var systemCursors = map[string]int32{
@@ -113,7 +117,12 @@ type app struct {
 	times         timings
 	history       []statSecond // the last minute, for diagnostics
 	diagAsked     time.Time    // when a diagnostics report was asked for; zero if not
-	out           image.Point  // renderer output size
+	diagHost      *string      // the host's report, waiting for the link test
+	linkTest      chan string  // the link test's result line
+	linkResult    string
+	quality       string      // what the host says it uses
+	qualityScale  int         // percent of full resolution video is sent at
+	out           image.Point // renderer output size
 	title         string
 	dirty         bool
 }
@@ -545,6 +554,9 @@ func (a *app) drainClient() {
 			a.releaseHeld()
 			a.startDecoder()
 			a.client.Refresh(a.dec != nil)
+			if q := a.cfg.Quality; q != "" && q != "auto" {
+				a.client.Send(protocol.Message{Type: protocol.TypeQuality, Text: q})
+			}
 			a.capture(true)
 			a.syncClipboard()
 			a.setTitle("Remoter · " + a.server)
@@ -701,8 +713,11 @@ func (a *app) hostMessage(m protocol.Message) {
 		a.displays, a.display = m.Count, m.Display
 	case protocol.TypeDiagnostics:
 		if !a.diagAsked.IsZero() { // otherwise another viewer asked
-			a.copyDiagnostics(m.Text)
+			text := m.Text
+			a.diagHost = &text
 		}
+	case protocol.TypeQuality:
+		a.quality, a.qualityScale = m.Text, m.Scale
 	case protocol.TypeVideo:
 		a.noVideo = m.Text
 	case protocol.TypeClipboard:
@@ -815,11 +830,30 @@ func (a *app) shortcut(sc int32) bool {
 			sdl.SetWindowFullscreen(a.win, sdlWindowFullscreenDesktop)
 		}
 	case scD:
-		if a.connected {
-			a.diagAsked = time.Now()
+		if a.connected && a.diagAsked.IsZero() {
+			a.diagAsked, a.diagHost, a.linkResult = time.Now(), nil, ""
+			a.linkTest = make(chan string, 1)
+			go func(ch chan<- string, server string) { ch <- linkTest(server) }(a.linkTest, a.server)
 			a.client.Send(protocol.Message{Type: protocol.TypeDiagnostics})
-			a.showNotice("Collecting diagnostics…", 5*time.Second)
+			a.showNotice("Collecting diagnostics and testing the connection…", 15*time.Second)
 		}
+	case scQ:
+		if !a.connected {
+			return true
+		}
+		cur := a.cfg.Quality
+		if cur == "" {
+			cur = "auto"
+		}
+		next := qualities[(slices.Index(qualities, cur)+1)%len(qualities)]
+		a.cfg.Quality = next
+		if a.cfgPath != "" {
+			if err := a.cfg.Save(a.cfgPath); err != nil {
+				log.Printf("saving settings: %v", err)
+			}
+		}
+		a.client.Send(protocol.Message{Type: protocol.TypeQuality, Text: next})
+		a.showNotice("Picture: "+qualityLabel(next)+"  ·  Ctrl+Alt+Q changes it", 3*time.Second)
 	case scPageDown, scPageUp:
 		if a.displays < 2 || !a.connected {
 			return true
@@ -936,8 +970,8 @@ func (a *app) tick() {
 	if a.client == nil && !a.manual && now.Sub(a.lastScan) > 10*time.Second {
 		a.scan()
 	}
-	if !a.diagAsked.IsZero() && now.Sub(a.diagAsked) > 5*time.Second {
-		a.copyDiagnostics("(no answer: the host's build is too old to send diagnostics)\n")
+	if !a.diagAsked.IsZero() {
+		a.finishDiagnostics(now)
 	}
 	if a.notice != "" && now.After(a.noticeUntil) {
 		a.showNotice("", 0)
@@ -957,8 +991,15 @@ func (a *app) tick() {
 			}
 		}
 		secs := now.Sub(a.statsAt).Seconds()
-		a.setTitle(fmt.Sprintf("Remoter · %s · %.0f fps · %.1f Mbit/s · %s", a.server,
-			float64(a.frames)/secs, float64(a.bytes)*8/1e6/secs, codec))
+		quality := ""
+		if a.quality != "" {
+			quality = " · " + qualityLabel(a.quality)
+			if a.qualityScale > 0 && a.qualityScale != 100 {
+				quality += fmt.Sprintf(" %d%%", a.qualityScale)
+			}
+		}
+		a.setTitle(fmt.Sprintf("Remoter · %s · %.0f fps · %.1f Mbit/s · %s%s", a.server,
+			float64(a.frames)/secs, float64(a.bytes)*8/1e6/secs, codec, quality))
 		t := a.times
 		a.history = append(a.history, statSecond{
 			at: now, frames: a.frames, bytes: a.bytes, codec: codec,

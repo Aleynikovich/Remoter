@@ -169,8 +169,12 @@ away.
   them over again. In Hyprland, binds marked `bindp` still stay local.
 * **Ctrl+Alt+Enter** toggles full screen, **Ctrl+Alt+PageDown/PageUp**
   switches between the remote computer's monitors, and **Ctrl+Alt+D** copies
-  a diagnostics report (the viewer's frame, decode and draw times for the
-  last minute, then the host's settings and log) to the clipboard.
+  a diagnostics report (a ping and download test, the viewer's frame,
+  decode and draw times for the last minute, then the host's settings and
+  log) to the clipboard.
+* **Ctrl+Alt+Q** steps the picture through Auto, Sharp, Balanced and Smooth;
+  the title shows the setting and the scale video arrives at. Auto drops
+  the resolution to 75% or 50% when the host cannot encode fast enough.
 * The clipboard follows you both ways: copy on the remote computer and paste
   locally, or copy locally and press Ctrl+V in the remote one.
 * `-jpeg` asks for JPEG tiles instead of video, `-fullscreen` starts full

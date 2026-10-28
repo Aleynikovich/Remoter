@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"runtime"
 	"strings"
 	"time"
@@ -62,6 +64,12 @@ func (a *app) diagnosticsReport(host string) string {
 	if a.noVideo != "" {
 		fmt.Fprintf(&b, "host says no video: %s\n", a.noVideo)
 	}
+	if a.quality != "" {
+		fmt.Fprintf(&b, "picture: %s at %d%% (asked for %q)\n", a.quality, a.qualityScale, a.cfg.Quality)
+	}
+	if a.linkResult != "" {
+		b.WriteString(a.linkResult + "\n")
+	}
 	b.WriteString("last seconds (fps, Mbit/s, decode avg/max ms, render avg/max ms, codec):\n")
 	for _, s := range a.history {
 		fmt.Fprintf(&b, "  %s %3d fps %6.2f Mbit/s  dec %5.1f/%5.1f  draw %5.1f/%5.1f  %s\n",
@@ -71,6 +79,82 @@ func (a *app) diagnosticsReport(host string) string {
 	b.WriteString("\n== Host\n")
 	b.WriteString(host)
 	return b.String()
+}
+
+// finishDiagnostics copies the report once the host's part and the link
+// test are both in, or as much as there is after a while.
+func (a *app) finishDiagnostics(now time.Time) {
+	select {
+	case r := <-a.linkTest:
+		a.linkResult, a.linkTest = r, nil
+	default:
+	}
+	waited := now.Sub(a.diagAsked)
+	if a.diagHost == nil && waited <= 20*time.Second || a.linkTest != nil && waited <= 20*time.Second {
+		return
+	}
+	if a.linkTest != nil {
+		a.linkResult = "link test: did not finish in time"
+	}
+	host := "(no answer: the host's build is too old to send diagnostics)\n"
+	if a.diagHost != nil {
+		host = *a.diagHost
+	}
+	a.diagHost, a.linkTest = nil, nil
+	a.copyDiagnostics(host)
+}
+
+// linkTest measures the connection to the relay at server: ping round
+// trips and a download, as one line for the report.
+func linkTest(server string) string {
+	client := &http.Client{Timeout: 15 * time.Second}
+	var lo, hi time.Duration
+	var pings int
+	for range 5 {
+		start := time.Now()
+		resp, err := client.Get("http://" + server + "/ping")
+		if err != nil {
+			return "link test: ping failed: " + err.Error()
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16))
+		resp.Body.Close()
+		d := time.Since(start)
+		if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "pong" {
+			return "link test: the host's build is too old to test the link"
+		}
+		if pings == 0 || d < lo {
+			lo = d
+		}
+		hi = max(hi, d)
+		pings++
+	}
+	line := fmt.Sprintf("link test: ping %.1f-%.1f ms", ms(lo), ms(hi))
+	const mb = 16
+	start := time.Now()
+	resp, err := client.Get(fmt.Sprintf("http://%s/speedtest?mb=%d", server, mb))
+	if err != nil {
+		return line + ", download failed: " + err.Error()
+	}
+	n, err := io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	secs := time.Since(start).Seconds()
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("%s, download failed after %d bytes (%s)", line, n, resp.Status)
+	}
+	return fmt.Sprintf("%s, download %.1f Mbit/s (%d MiB in %.1f s)", line, float64(n)*8/1e6/secs, n>>20, secs)
+}
+
+// qualityLabel is how a quality setting reads in the title and notices.
+func qualityLabel(q string) string {
+	switch q {
+	case "sharp":
+		return "Sharp"
+	case "balanced":
+		return "Balanced"
+	case "smooth":
+		return "Smooth"
+	}
+	return "Auto"
 }
 
 // copyDiagnostics puts the combined report on the local clipboard.

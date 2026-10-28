@@ -18,6 +18,9 @@ type Config struct {
 	// PhonePort its wireless debugging port then.
 	Phone     string `json:"phone,omitempty"`
 	PhonePort string `json:"phonePort,omitempty"`
+	// Quality is the picture quality asked of hosts: auto, sharp, balanced
+	// or smooth ("" is auto).
+	Quality string `json:"quality,omitempty"`
 }
 
 // PasswordFor is the password to try for server: the one that worked last
