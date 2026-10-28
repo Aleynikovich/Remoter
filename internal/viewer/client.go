@@ -103,6 +103,20 @@ func ViewerURL(addr string) (string, error) {
 	return u.String(), nil
 }
 
+// HTTPBase is the relay's web address for a viewer WebSocket URL:
+// ws://100.1.2.3:8080/ws/viewer gives http://100.1.2.3:8080.
+func HTTPBase(viewerURL string) string {
+	u, err := url.Parse(viewerURL)
+	if err != nil {
+		return ""
+	}
+	scheme := "http"
+	if u.Scheme == "wss" {
+		scheme = "https"
+	}
+	return scheme + "://" + u.Host
+}
+
 // Events delivers what happened on the connection, in order.
 func (c *Client) Events() <-chan Event { return c.events }
 

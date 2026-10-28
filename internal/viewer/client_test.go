@@ -113,3 +113,14 @@ func TestClientWrongPassword(t *testing.T) {
 		t.Fatal("wrong password was not reported")
 	}
 }
+
+func TestHTTPBase(t *testing.T) {
+	for in, want := range map[string]string{
+		"ws://100.102.208.35:8080/ws/viewer": "http://100.102.208.35:8080",
+		"wss://relay.example/ws/viewer":      "https://relay.example",
+	} {
+		if got := viewer.HTTPBase(in); got != want {
+			t.Errorf("HTTPBase(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

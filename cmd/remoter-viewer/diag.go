@@ -60,7 +60,7 @@ func (a *app) diagnosticsReport(host string) string {
 	if a.dec != nil {
 		dec = fmt.Sprintf("%T", a.dec)
 	}
-	fmt.Fprintf(&b, "server: %s, decoder: %s, video size %dx%d, keyboard captured: %v\n", a.server, dec, a.videoSize.X, a.videoSize.Y, a.captured)
+	fmt.Fprintf(&b, "server: %s (%s), decoder: %s, video size %dx%d, keyboard captured: %v\n", a.server, a.client.URL, dec, a.videoSize.X, a.videoSize.Y, a.captured)
 	if a.noVideo != "" {
 		fmt.Fprintf(&b, "host says no video: %s\n", a.noVideo)
 	}
@@ -104,15 +104,15 @@ func (a *app) finishDiagnostics(now time.Time) {
 	a.copyDiagnostics(host)
 }
 
-// linkTest measures the connection to the relay at server: ping round
+// linkTest measures the connection to the relay at base (http://host:port): ping round
 // trips and a download, as one line for the report.
-func linkTest(server string) string {
+func linkTest(base string) string {
 	client := &http.Client{Timeout: 15 * time.Second}
 	var lo, hi time.Duration
 	var pings int
 	for range 5 {
 		start := time.Now()
-		resp, err := client.Get("http://" + server + "/ping")
+		resp, err := client.Get(base + "/ping")
 		if err != nil {
 			return "link test: ping failed: " + err.Error()
 		}
@@ -131,7 +131,7 @@ func linkTest(server string) string {
 	line := fmt.Sprintf("link test: ping %.1f-%.1f ms", ms(lo), ms(hi))
 	const mb = 16
 	start := time.Now()
-	resp, err := client.Get(fmt.Sprintf("http://%s/speedtest?mb=%d", server, mb))
+	resp, err := client.Get(fmt.Sprintf("%s/speedtest?mb=%d", base, mb))
 	if err != nil {
 		return line + ", download failed: " + err.Error()
 	}

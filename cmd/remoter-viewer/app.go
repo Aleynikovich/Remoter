@@ -833,7 +833,7 @@ func (a *app) shortcut(sc int32) bool {
 		if a.connected && a.diagAsked.IsZero() {
 			a.diagAsked, a.diagHost, a.linkResult = time.Now(), nil, ""
 			a.linkTest = make(chan string, 1)
-			go func(ch chan<- string, server string) { ch <- linkTest(server) }(a.linkTest, a.server)
+			go func(ch chan<- string, base string) { ch <- linkTest(base) }(a.linkTest, viewer.HTTPBase(a.client.URL))
 			a.client.Send(protocol.Message{Type: protocol.TypeDiagnostics})
 			a.showNotice("Collecting diagnostics and testing the connection…", 15*time.Second)
 		}
