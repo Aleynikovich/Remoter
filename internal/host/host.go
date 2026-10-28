@@ -15,6 +15,8 @@ import (
 	"image/draw"
 	"log"
 	"math/big"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,7 +38,8 @@ const (
 	staleAfter = 5 * time.Second
 	// lagAfter is how long the host waits for one viewer while another has
 	// room, so a slow phone does not freeze everyone else's picture.
-	lagAfter = time.Second
+	lagAfter  = 250 * time.Millisecond
+	lagPeriod = 5 * time.Second
 	// refineAfter is how long a tile must stay still before it is resent
 	// at high quality.
 	refineAfter = 300 * time.Millisecond
@@ -142,6 +145,15 @@ type viewerState struct {
 	lastAck time.Time
 	video   bool
 	full    time.Time // when its window filled up, zero while it has room
+	// blocked adds up how long the viewer has held the stream back since
+	// blockedFrom. Holding it back for lagAfter of a lagPeriod marks it
+	// lagging: the host stops waiting for it, for at least lagPeriod and
+	// until it has caught up.
+	blocked     time.Duration
+	blockedFrom time.Time
+	lagging     bool
+	laggingAt   time.Time
+	loggedLag   time.Time // last time lagging was logged, to keep it quiet
 }
 
 func (f *flow) poke() {
@@ -203,32 +215,81 @@ func (f *flow) watched() bool {
 	return len(f.viewers) > 0
 }
 
-// ready reports whether someone is watching and every live viewer has room
-// for another update. A viewer that has had no room for lagAfter while
-// another one does is no longer waited for; the relay drops it if it falls
-// too far behind, and it reconnects.
+// ready reports whether someone is watching and every viewer that keeps up
+// has room for another update. A viewer whose window stays full for
+// lagAfter is marked lagging and not waited for until it has caught up, so
+// a slow phone cannot set everyone's frame rate; the relay drops it if it
+// falls too far behind, and it reconnects.
 func (f *flow) ready() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.viewers) == 0 {
-		return false
-	}
 	now := time.Now()
 	room, waiting := false, false
-	for _, v := range f.viewers {
-		if f.seq-v.acked < window || now.Sub(v.lastAck) >= staleAfter {
-			v.full = time.Time{}
+	for id, v := range f.viewers {
+		behind := f.seq - v.acked
+		if now.Sub(v.lastAck) >= staleAfter {
+			continue // not acking at all (backgrounded, gone)
+		}
+		if v.lagging {
+			if behind > 1 || now.Sub(v.laggingAt) < lagPeriod {
+				continue
+			}
+			v.lagging = false
+		}
+		if now.Sub(v.blockedFrom) > lagPeriod {
+			v.blocked, v.blockedFrom = 0, now
+		}
+		if behind < window {
+			if !v.full.IsZero() {
+				v.blocked += now.Sub(v.full)
+				v.full = time.Time{}
+			}
 			room = true
 			continue
 		}
 		if v.full.IsZero() {
 			v.full = now
 		}
-		if now.Sub(v.full) < lagAfter {
+		if v.blocked+now.Sub(v.full) < lagAfter {
 			waiting = true
+			continue
+		}
+		v.lagging, v.laggingAt = true, now
+		v.full, v.blocked, v.blockedFrom = time.Time{}, 0, now
+		if now.Sub(v.loggedLag) > time.Minute {
+			v.loggedLag = now
+			log.Printf("viewer %s cannot keep up, no longer waiting for it", id)
+		}
+	}
+	if !room && !waiting && len(f.viewers) > 0 {
+		// Everyone is lagging or silent: keep a trickle going so they
+		// can recover, at most one update per window per viewer.
+		for _, v := range f.viewers {
+			if f.seq-v.acked < window {
+				return true
+			}
 		}
 	}
 	return room && !waiting
+}
+
+// summary describes each viewer's state for the log.
+func (f *flow) summary() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var parts []string
+	for id, v := range f.viewers {
+		state := "keeping up"
+		switch {
+		case time.Since(v.lastAck) >= staleAfter:
+			state = "not acking"
+		case v.lagging:
+			state = "lagging"
+		}
+		parts = append(parts, fmt.Sprintf("viewer %s %s (%d behind)", id, state, f.seq-v.acked))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 // next reserves a sequence number for an update and reports whether it must
@@ -491,7 +552,7 @@ func (a *Agent) encodeAndSend(ctx context.Context, conn *websocket.Conn, frames 
 		default:
 		}
 		_, scale := a.res.current()
-		tm.report(st.usingVideo, scale)
+		tm.report(st.usingVideo, scale, a.flow.summary)
 		tm.size = f.img.Bounds().Size()
 		tm.wait += f.wait
 		tm.capture += f.capture
@@ -529,7 +590,7 @@ type timings struct {
 
 const timingsEvery = 10 * time.Second
 
-func (t *timings) report(video bool, scale int) {
+func (t *timings) report(video bool, scale int, viewers func() string) {
 	el := time.Since(t.start)
 	if el < timingsEvery {
 		return
@@ -542,9 +603,9 @@ func (t *timings) report(video bool, scale int) {
 		per := func(d time.Duration) string {
 			return (d / time.Duration(max(t.loops, 1))).Round(100 * time.Microsecond).String()
 		}
-		log.Printf("stream %s %dx%d: %.1f fps, %.1f Mbit/s; per capture: capture %s, encode %s, send %s; waited %.0f%% of the time for viewers or the frame interval",
+		log.Printf("stream %s %dx%d: %.1f fps, %.1f Mbit/s; per capture: capture %s, encode %s, send %s; waited %.0f%% of the time for viewers or the frame interval; %s",
 			mode, t.size.X, t.size.Y, float64(t.frames)/el.Seconds(), float64(t.bytes)*8/1e6/el.Seconds(),
-			per(t.capture), per(t.encode), per(t.send), min(100, 100*t.wait.Seconds()/el.Seconds()))
+			per(t.capture), per(t.encode), per(t.send), min(100, 100*t.wait.Seconds()/el.Seconds()), viewers())
 	}
 	*t = timings{start: time.Now()}
 }
