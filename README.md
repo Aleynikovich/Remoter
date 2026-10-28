@@ -4,7 +4,7 @@ An open-source remote desktop tool in the spirit of TeamViewer: share your
 screen, let someone control it, and connect with a 9-digit ID and a password.
 
 > Status: early prototype. Screen streaming works everywhere; mouse and
-> keyboard control works on Windows (macOS and Linux are still view-only).
+> keyboard control works on Windows and Linux (macOS is still view-only).
 > See the milestone issues.
 
 ## How it works
@@ -132,6 +132,25 @@ give it keyboard focus.
   (`vivaldi://flags/...` in Vivaldi, `edge://flags/...` in Edge), add e.g.
   `http://100.102.208.35:8080`, enable it and restart the browser. That also
   lets the clipboard work without waiting for a click.
+
+### Sharing a Linux PC
+
+`remoter` shares a Linux desktop too, with keyboard, mouse and clipboard:
+
+* **Hyprland, Sway and other wlroots compositors**: the screen is captured
+  with wlr-screencopy and input goes through the virtual keyboard and pointer
+  protocols, so it needs no root and no extra setup. The virtual keyboard
+  uses your first layout from Hyprland's `input:kb_layout` (or
+  `$REMOTER_XKB_LAYOUT`, e.g. `de(nodeadkeys)`).
+* **X11 sessions** (GNOME or KDE on Xorg, XFCE...): capture through X11 and
+  input through XTEST.
+* GNOME and KDE on Wayland are not supported yet: they only allow capture
+  through the desktop portal.
+
+Install `openh264` (Arch) or `libopenh264-7` (Debian, Ubuntu) for H.264, and
+`wl-clipboard` (Wayland) or `xclip` (X11) for the clipboard. Run as a
+background service, Remoter finds the session's Wayland socket by itself.
+`scripts/install-share.sh` sets that service up.
 
 ### Linux viewers with a tiling compositor (Hyprland, Sway...)
 

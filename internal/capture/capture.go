@@ -114,3 +114,12 @@ func (t TestPattern) Capture() (image.Image, error) {
 	draw.Draw(img, image.Rect(x, h/2-h/16, x+h/8, h/2+h/16), image.White, image.Point{}, draw.Src)
 	return img, nil
 }
+
+// screenshotDisplays lists the monitors the generic capturer sees.
+func screenshotDisplays() []image.Rectangle {
+	var rs []image.Rectangle
+	for i := range screenshot.NumActiveDisplays() {
+		rs = append(rs, screenshot.GetDisplayBounds(i))
+	}
+	return rs
+}
