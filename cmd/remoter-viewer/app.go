@@ -108,6 +108,7 @@ type app struct {
 	cursors  map[string]uintptr
 	clip     string // clipboard text both sides already have
 	displays int
+	allShown bool   // the host can show every display at once, as display number displays
 	noVideo  string // why the host sends JPEG instead of H.264, if it says
 	display  int
 
@@ -755,7 +756,8 @@ func (a *app) hostMessage(m protocol.Message) {
 	case protocol.TypeCursor:
 		a.setCursor(m.Cursor)
 	case protocol.TypeDisplays:
-		a.displays, a.display = m.Count, m.Display
+		a.displays, a.display, a.allShown = m.Count, m.Display, m.All
+		a.dirty = true
 	case protocol.TypeDiagnostics:
 		if !a.diagAsked.IsZero() { // otherwise another viewer asked
 			text := m.Text
@@ -903,18 +905,45 @@ func (a *app) shortcut(sc int32) bool {
 		if a.displays < 2 || !a.connected {
 			return true
 		}
+		n := a.monitorChoices()
 		step := 1
 		if sc == scPageUp {
-			step = a.displays - 1
+			step = n - 1
 		}
-		a.releaseHeld()
-		a.display = (a.display + step) % a.displays
-		a.client.Send(protocol.Message{Type: protocol.TypeSelectDisplay, Display: a.display})
-		a.showNotice(fmt.Sprintf("Display %d of %d", a.display+1, a.displays), 2*time.Second)
+		a.selectDisplay((a.display + step) % n)
 	default:
 		return false
 	}
 	return true
+}
+
+// monitorChoices is how many views the host offers: each display, and all
+// of them at once when it can.
+func (a *app) monitorChoices() int {
+	if a.allShown {
+		return a.displays + 1
+	}
+	return a.displays
+}
+
+// monitorLabel names a view for the toolbar and notices.
+func (a *app) monitorLabel(d int) string {
+	if d >= a.displays {
+		return "All monitors"
+	}
+	return fmt.Sprintf("Monitor %d of %d", d+1, a.displays)
+}
+
+// selectDisplay asks the host to show display d, or every display when d
+// is one past the last.
+func (a *app) selectDisplay(d int) {
+	if d < 0 || d >= a.monitorChoices() {
+		return
+	}
+	a.releaseHeld()
+	a.display = d
+	a.client.Send(protocol.Message{Type: protocol.TypeSelectDisplay, Display: d})
+	a.showNotice(a.monitorLabel(d), 2*time.Second)
 }
 
 func (a *app) mouseButton(sdlButton int, down bool) {

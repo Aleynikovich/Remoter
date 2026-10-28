@@ -31,6 +31,17 @@ func (c *Conn) NewPointer(o Output) (*Pointer, error) {
 	return p, c.send(c.pointers.id, 0, c.seat, p.id) // create_virtual_pointer
 }
 
+// NewLayoutPointer creates a virtual mouse whose absolute positions cover
+// every output, with x, y measured from the top left of the layout.
+func (c *Conn) NewLayoutPointer() (*Pointer, error) {
+	if c.pointers.id == 0 {
+		return nil, errors.New("the compositor does not offer a virtual mouse (wlr-virtual-pointer)")
+	}
+	b := c.layoutBox()
+	p := &Pointer{c: c, id: c.newID(nil), layout: Output{X: b.x, Y: b.y, W: b.w, H: b.h}}
+	return p, c.send(c.pointers.id, 0, c.seat, p.id) // create_virtual_pointer
+}
+
 // Close removes the mouse.
 func (p *Pointer) Close() { p.c.send(p.id, 8) }
 

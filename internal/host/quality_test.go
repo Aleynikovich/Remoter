@@ -91,3 +91,21 @@ func TestAutoQualityShrinksOnASlowLink(t *testing.T) {
 		t.Fatalf("scale %d once the link kept up, want 100", s)
 	}
 }
+
+func TestVideoSize(t *testing.T) {
+	for _, c := range []struct{ w, h, scale, ww, wh int }{
+		{3200, 1800, 100, 3200, 1800},
+		{3200, 1800, 75, 2400, 1350},
+		{5120, 1800, 100, 4096, 1440},
+		{5120, 1800, 50, 2560, 900},
+		{3200, 3600, 100, 2896, 3258},
+	} {
+		w, h := videoSize(c.w, c.h, c.scale)
+		if w != c.ww || h != c.wh {
+			t.Errorf("videoSize(%d, %d, %d) = %dx%d, want %dx%d", c.w, c.h, c.scale, w, h, c.ww, c.wh)
+		}
+		if w > maxVideoSide || h > maxVideoSide || w*h > maxVideoArea {
+			t.Errorf("videoSize(%d, %d, %d) = %dx%d, over the limits", c.w, c.h, c.scale, w, h)
+		}
+	}
+}

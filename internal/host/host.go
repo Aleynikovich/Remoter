@@ -14,6 +14,7 @@ import (
 	"image"
 	"image/draw"
 	"log"
+	"math"
 	"math/big"
 	"sort"
 	"strings"
@@ -93,7 +94,8 @@ type VideoEncoder interface {
 	Close()
 }
 
-// Monitors switches the shared display.
+// Monitors switches the shared display. With two or more displays, display
+// Count shows all of them at once.
 type Monitors interface {
 	Count() int
 	Current() int
@@ -803,9 +805,7 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 	}
 
 	start := time.Now()
-	if scale := s.a.scale(); scale < 100 {
-		w := max(img.Rect.Dx()*scale/100&^1, 16)
-		h := max(img.Rect.Dy()*scale/100&^1, 16)
+	if w, h := videoSize(img.Rect.Dx(), img.Rect.Dy(), s.a.scale()); w != img.Rect.Dx() || h != img.Rect.Dy() {
 		s.scaled = stream.Downscale(s.scaled, img, w, h)
 		img = s.scaled
 	}
@@ -849,6 +849,27 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 	vw, vh := s.video.Size()
 	s.buf = stream.MarshalVideo(s.buf, seq, vw, vh, key, data)
 	return s.buf, nil
+}
+
+// Hardware encoders and phone decoders stop at about 4096 pixels across
+// and H.264 level 5.1's frame size, which every monitor side by side can
+// pass.
+const (
+	maxVideoSide = 4096
+	maxVideoArea = 4096 * 2304
+)
+
+// videoSize is the size a w×h capture is encoded at, at scale percent of
+// full resolution and within the limits above.
+func videoSize(w, h, scale int) (int, int) {
+	limit := min(maxVideoSide/float64(w), maxVideoSide/float64(h), math.Sqrt(maxVideoArea/float64(w*h)))
+	if limit < float64(scale)/100 {
+		return max(int(float64(w)*limit)&^1, 16), max(int(float64(h)*limit)&^1, 16)
+	}
+	if scale < 100 {
+		return max(w*scale/100&^1, 16), max(h*scale/100&^1, 16)
+	}
+	return w, h
 }
 
 func (s *streamer) closeVideo() {
@@ -949,7 +970,8 @@ func (a *Agent) sendDisplays(ctx context.Context, conn *websocket.Conn) error {
 	if a.Monitors == nil {
 		return nil
 	}
-	return send(ctx, conn, protocol.Message{Type: protocol.TypeDisplays, Count: a.Monitors.Count(), Display: a.Monitors.Current()})
+	n := a.Monitors.Count()
+	return send(ctx, conn, protocol.Message{Type: protocol.TypeDisplays, Count: n, Display: a.Monitors.Current(), All: n > 1})
 }
 
 // watchClipboard sends the host clipboard to viewers whenever it changes.

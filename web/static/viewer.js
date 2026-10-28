@@ -72,7 +72,7 @@ function connect(id, password) {
     } else if (msg.type === "video") {
       stats.hostWhy = msg.text || "";
     } else if (msg.type === "displays") {
-      showDisplays(msg.count || 1, msg.display || 0);
+      showDisplays(msg.count || 1, msg.display || 0, !!msg.all);
     } else if (msg.type === "clipboard") {
       remoteClipboard(msg.text);
     } else if (msg.type === "error") {
@@ -412,11 +412,13 @@ $("scale").addEventListener("click", () => {
 });
 
 // Display switching on hosts with several monitors.
-function showDisplays(count, current) {
+// Option number count, when the host offers it, shows every monitor at once.
+function showDisplays(count, current, all) {
   const sel = $("display");
   sel.hidden = count < 2;
-  if (sel.options.length !== count) {
-    sel.replaceChildren(...Array.from({ length: count }, (_, i) => new Option(`Display ${i + 1}`, i)));
+  const choices = count + (all ? 1 : 0);
+  if (sel.options.length !== choices) {
+    sel.replaceChildren(...Array.from({ length: choices }, (_, i) => new Option(i < count ? `Display ${i + 1}` : "All displays", i)));
   }
   sel.value = current;
 }

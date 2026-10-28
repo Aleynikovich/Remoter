@@ -165,12 +165,20 @@ func (w *waylandDevice) ensure() error {
 		return errors.New("no monitors")
 	}
 	w.output = outs[0]
+	one := false
 	for _, o := range outs {
 		if o.X == w.display.Min.X && o.Y == w.display.Min.Y {
 			w.output = o
+			one = o.W == w.display.Dx() && o.H == w.display.Dy()
 		}
 	}
-	if w.pointer, err = c.NewPointer(w.output); err != nil {
+	if !one && len(outs) > 1 && !w.display.Empty() {
+		// Every monitor at once.
+		w.pointer, err = c.NewLayoutPointer()
+	} else {
+		w.pointer, err = c.NewPointer(w.output)
+	}
+	if err != nil {
 		return err
 	}
 	if w.keyboard == nil {
