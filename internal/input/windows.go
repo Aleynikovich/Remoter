@@ -91,6 +91,7 @@ type key struct {
 type windows struct {
 	display image.Rectangle
 	checked bool // logged where the first move landed
+	pointer pointer
 
 	mu      sync.Mutex
 	keys    map[string]map[key]bool // held keys per viewer
@@ -121,18 +122,18 @@ func (w *windows) HandleInput(viewer string, in protocol.Input) {
 	defer w.mu.Unlock()
 	switch in.Kind {
 	case "mousemove":
-		w.move(in.X, in.Y)
+		w.move(in.X, in.Y, false)
 	case "mousedown", "mouseup":
 		down := in.Kind == "mousedown"
 		flag := buttonFlag(in.Button, down)
 		if flag == 0 {
 			return
 		}
-		w.move(in.X, in.Y)
+		w.move(in.X, in.Y, true)
 		sendMouse(0, 0, 0, flag)
 		setHeld(w.buttons, viewer, in.Button, down)
 	case "wheel":
-		w.move(in.X, in.Y)
+		w.move(in.X, in.Y, false)
 		// Browsers report pixels (about 100 per notch) with down positive;
 		// Windows wants 120 per notch with up positive.
 		amount := int32(-in.DeltaY * wheelDelta / 100)
@@ -172,36 +173,16 @@ func (w *windows) SetDisplay(display image.Rectangle) {
 	w.mu.Unlock()
 }
 
-func (w *windows) move(x, y float64) {
+func (w *windows) move(x, y float64, exact bool) {
 	p := toScreen(w.display, x, y)
-	// SetCursorPos takes physical pixels, the same ones the screen is
-	// captured in. SendInput's absolute 0..65535 grid is mapped by Windows
-	// itself, and with several monitors or mixed scaling that put the
-	// pointer well away from where the viewer pointed.
-	if ok, _, _ := procSetCursorPos.Call(uintptr(p.X), uintptr(p.Y)); ok != 0 {
-		// A move of nothing, so programs that read raw mouse input
-		// (and hover effects) notice the pointer moved.
-		sendMouse(0, 0, 0, mouseeventfMove)
-		if !w.checked {
-			w.checked = true
-			got, _ := cursorPos()
-			log.Printf("input: display %v, virtual screen %d,%d %dx%d, DPI awareness %d, pointer asked at %v and now at %v", w.display,
-				metric(smXVirtualScreen), metric(smYVirtualScreen), metric(smCXVirtualScreen), metric(smCYVirtualScreen),
-				dpiAwareness(), p, got)
-		}
-		return
+	w.pointer.move(p, exact)
+	if !w.checked {
+		w.checked = true
+		got, _ := cursorPos()
+		log.Printf("input: display %v, virtual screen %d,%d %dx%d, DPI awareness %d, pointer asked at %v and now at %v", w.display,
+			metric(smXVirtualScreen), metric(smYVirtualScreen), metric(smCXVirtualScreen), metric(smCYVirtualScreen),
+			dpiAwareness(), p, got)
 	}
-	// The secure desktop (UAC, lock screen) refuses SetCursorPos; fall
-	// back to absolute input.
-	vx, vy := metric(smXVirtualScreen), metric(smYVirtualScreen)
-	vw, vh := metric(smCXVirtualScreen), metric(smCYVirtualScreen)
-	if vw <= 1 || vh <= 1 {
-		return
-	}
-	// Absolute coordinates span 0..65535 across the whole virtual desktop.
-	nx := int32((int64(p.X-vx)*65535 + int64(vw-1)/2) / int64(vw-1))
-	ny := int32((int64(p.Y-vy)*65535 + int64(vh-1)/2) / int64(vh-1))
-	sendMouse(nx, ny, 0, mouseeventfMove|mouseeventfAbsolute|mouseeventfVirtualDsk)
 }
 
 // dpiAwareness is this thread's DPI awareness: 0 unaware, 1 system, 2 per
