@@ -11,6 +11,7 @@ let session = null; // { id, password, retryUntil }
 $("connect-form").addEventListener("submit", (e) => {
   e.preventDefault();
   session = null;
+  Object.assign(saver, { on: false, host: false, asked: false, bytes: 0 });
   connect($("id").value.replace(/\s+/g, ""), $("password").value);
 });
 $("disconnect").addEventListener("click", () => {
@@ -54,6 +55,8 @@ function connect(id, password) {
       videoSupported.then((v) => {
         if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "refresh", video: v }));
       });
+      if (saver.on) sock.send(JSON.stringify({ type: "data_saver", ok: true }));
+      checkMetered();
       canvas.focus();
     } else if (msg.type === "cursor") {
       canvas.style.cursor = msg.cursor;
@@ -64,6 +67,8 @@ function connect(id, password) {
       if (![...q.options].some((o) => o.value === want)) q.add(new Option(want, want));
       q.value = want;
       stats.scale = msg.scale || 100;
+    } else if (msg.type === "data_saver") {
+      saver.host = !!msg.ok;
     } else if (msg.type === "video") {
       stats.hostWhy = msg.text || "";
     } else if (msg.type === "displays") {
@@ -145,6 +150,7 @@ async function drawUpdate(sock, buf) {
   if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "ack", seq }));
   stats.frames++;
   stats.bytes += buf.byteLength;
+  saver.bytes += buf.byteLength;
   stats.mode = "JPEG";
 }
 
@@ -219,6 +225,7 @@ function videoStream(sock) {
       const key = (dv.getUint8(9) & 1) !== 0;
       const data = new Uint8Array(buf, 10);
       stats.bytes += buf.byteLength;
+      saver.bytes += buf.byteLength;
       stats.mode = "H.264";
       if (key) {
         const c = codecFromSPS(data);
@@ -258,7 +265,9 @@ setInterval(() => {
   if (mode === "JPEG") why = browserWhy || stats.hostWhy;
   if (why) mode += ` (no H.264: ${why.length > 60 ? why.slice(0, 57) + "…" : why})`;
   if (stats.mode === "H.264" && stats.scale < 100) mode += ` · ${stats.scale}%`;
+  if (saver.host) mode += " · data saver";
   $("stats").textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbit/s · ${mode}`;
+  $("saver").textContent = `Data saver: ${saver.on ? "on" : "off"} (${dataText(saver.bytes)} used)`;
   $("stats").title = why ? `Sending JPEG because ${why}` : "";
   const decode = stats.decoded ? ` · decode ${(stats.decodeMs / stats.decoded).toFixed(1)} ms · queue ${stats.queue}` : "";
   stats.history.push(`${new Date().toISOString().slice(11, 19)} ${$("stats").textContent}${decode}`);
@@ -500,6 +509,36 @@ $("diag-copy").addEventListener("click", () => {
   setTimeout(() => { $("diag-copy").textContent = "Copy"; }, 1500);
 });
 $("diag-close").addEventListener("click", () => $("diag-dialog").close());
+
+// Data saver, for metered connections: the host sends at most 15 fps at
+// half resolution while any viewer asks for it. The browser only knows a
+// connection is metered on some phones (Chrome's Network Information API).
+const saver = { on: false, host: false, asked: false, bytes: 0 };
+function setSaver(on) {
+  saver.on = on;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "data_saver", ok: on }));
+  $("saver-ask").hidden = true;
+  if (!on) storeSet("saverOnMetered", "");
+}
+function checkMetered() {
+  const c = navigator.connection;
+  if (saver.on || saver.asked || !c || !(c.saveData || c.type === "cellular")) return;
+  saver.asked = true;
+  if (storeGet("saverOnMetered")) setSaver(true);
+  else $("saver-ask").hidden = false;
+}
+if (navigator.connection) navigator.connection.addEventListener("change", () => { if (ws) checkMetered(); });
+function storeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function storeSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private window */ } }
+function dataText(n) {
+  if (n < 1e6) return `${(n / 1e3).toFixed(0)} KB`;
+  if (n < 1e9) return `${(n / 1e6).toFixed(1)} MB`;
+  return `${(n / 1e9).toFixed(2)} GB`;
+}
+$("saver").addEventListener("click", () => { setSaver(!saver.on); canvas.focus(); });
+$("saver-yes").addEventListener("click", () => { setSaver(true); canvas.focus(); });
+$("saver-always").addEventListener("click", () => { setSaver(true); storeSet("saverOnMetered", "1"); canvas.focus(); });
+$("saver-no").addEventListener("click", () => { $("saver-ask").hidden = true; canvas.focus(); });
 
 // Quality: the host scales video down to keep up; Auto picks the scale.
 $("quality").addEventListener("change", () => {
