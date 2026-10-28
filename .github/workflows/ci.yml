@@ -24,6 +24,10 @@ jobs:
       # Shows whether desktop duplication or GDI captured the runner's screen.
       - if: runner.os == 'Windows'
         run: go test -v -run TestScreen ./internal/capture
+      # Shows which Media Foundation H.264 encoders the runner has (it has
+      # no GPU, so the hardware test skips).
+      - if: runner.os == 'Windows'
+        run: go test -v -run Encoder ./internal/mf
       - if: runner.os == 'Windows'
         name: Background launch smoke test
         shell: pwsh

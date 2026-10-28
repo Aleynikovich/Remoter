@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/aleynikovich/remoter/internal/h264"
 	"github.com/aleynikovich/remoter/internal/host"
 	"github.com/aleynikovich/remoter/internal/input"
+	"github.com/aleynikovich/remoter/internal/mf"
 	"github.com/aleynikovich/remoter/internal/update"
 )
 
@@ -85,12 +87,16 @@ func newAgent(o hostOptions) *host.Agent {
 		Cursor:    cursor.Shape,
 		Monitors:  mons,
 		Diagnostics: func() string {
+			enc, _ := videoEncoder.Load().(string)
+			if enc == "" {
+				enc = "none yet"
+			}
 			fps := "no limit"
 			if o.fps > 0 {
 				fps = fmt.Sprint(o.fps)
 			}
-			return fmt.Sprintf("Remoter %s on %s/%s, %d CPUs, administrator %v\nsettings: fps %s, bitrate %d kbit/s, JPEG quality %d, display %d, video off %v\n--- recent log ---\n%s",
-				version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), isAdmin(), fps, o.kbps, o.quality, o.display, o.noVideo, diag.Log)
+			return fmt.Sprintf("Remoter %s on %s/%s, %d CPUs, administrator %v\nsettings: fps %s, bitrate %d kbit/s, JPEG quality %d, display %d, video off %v\nvideo encoder: %s\n--- recent log ---\n%s",
+				version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), isAdmin(), fps, o.kbps, o.quality, o.display, o.noVideo, enc, diag.Log)
 		},
 		OnRegistered: func(id string) {
 			if id == shown {
@@ -115,8 +121,45 @@ func newAgent(o hostOptions) *host.Agent {
 			status.Store("")
 		}()
 		a.VideoStatus = func() string { return status.Load().(string) }
+		cpu := func(w, h int) (host.VideoEncoder, error) {
+			e, err := h264.NewEncoder(w, h, o.kbps, o.fps)
+			if err == nil {
+				videoEncoder.Store("OpenH264 on the CPU")
+			}
+			return e, err
+		}
 		a.NewVideo = func(w, h int) (host.VideoEncoder, error) {
-			return h264.NewEncoder(w, h, o.kbps, o.fps)
+			if !gpuVideo.Load() {
+				return cpu(w, h)
+			}
+			e, err := mf.NewEncoder(w, h, o.kbps)
+			if err != nil {
+				log.Printf("GPU H.264 encoder off, using the CPU: %v", err)
+				gpuVideo.Store(false)
+				return cpu(w, h)
+			}
+			if videoEncoder.Swap(e.Name()+" on the GPU") != e.Name()+" on the GPU" {
+				log.Printf("H.264 encoding on the GPU with %s", e.Name())
+			}
+			return &fallbackVideo{VideoEncoder: e, fallback: cpu}, nil
+		}
+		if runtime.GOOS == "windows" {
+			go func() {
+				// Try the sizes Auto will use on this screen, too.
+				sizes := []string{"1280x720"}
+				if r := displayBounds(o.display); !r.Empty() {
+					for _, scale := range []int{100, 75, 50} {
+						sizes = append(sizes, fmt.Sprintf("%dx%d", r.Dx()*scale/100&^1, r.Dy()*scale/100&^1))
+					}
+				}
+				if err := childSelfTest("-gpu-video-selftest=" + strings.Join(sizes, ",")); err != nil {
+					log.Printf("GPU H.264 encoder off, using the CPU: %v", err)
+					return
+				}
+				gpuVideo.Store(true)
+				// Switch encoders on the next picture.
+				a.RestartVideo()
+			}()
 		}
 	}
 	return a
@@ -197,4 +240,45 @@ func displayBounds(display int) image.Rectangle {
 		return ds[display]
 	}
 	return image.Rectangle{}
+}
+
+var (
+	// gpuVideo is set once the GPU's H.264 encoder passed its self-test,
+	// and cleared when it fails.
+	gpuVideo atomic.Bool
+	// videoEncoder names the encoder in use, for diagnostics.
+	videoEncoder atomic.Value
+)
+
+// fallbackVideo encodes on the GPU until that fails, then on the CPU.
+type fallbackVideo struct {
+	host.VideoEncoder
+	fallback func(w, h int) (host.VideoEncoder, error)
+	cpu      bool
+}
+
+func (f *fallbackVideo) Encode(img *image.RGBA, key bool) ([]byte, bool, error) {
+	data, isKey, err := f.VideoEncoder.Encode(img, key)
+	if err == nil || f.cpu {
+		return data, isKey, err
+	}
+	log.Printf("GPU H.264 encoder failed, using the CPU: %v", err)
+	gpuVideo.Store(false)
+	w, h := f.Size()
+	f.VideoEncoder.Close()
+	f.cpu = true
+	if f.VideoEncoder, err = f.fallback(w, h); err != nil {
+		f.VideoEncoder = closedVideo{w, h}
+		return nil, false, err
+	}
+	return f.VideoEncoder.Encode(img, true)
+}
+
+// closedVideo stands in for an encoder that could not be opened.
+type closedVideo struct{ w, h int }
+
+func (c closedVideo) Size() (int, int) { return c.w, c.h }
+func (c closedVideo) Close()           {}
+func (c closedVideo) Encode(*image.RGBA, bool) ([]byte, bool, error) {
+	return nil, false, errors.New("no video encoder")
 }

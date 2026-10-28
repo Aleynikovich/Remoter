@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
 	"io"
 	"io/fs"
 	"log"
@@ -18,11 +19,13 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/aleynikovich/remoter/internal/capture"
 	"github.com/aleynikovich/remoter/internal/diag"
 	"github.com/aleynikovich/remoter/internal/h264"
+	"github.com/aleynikovich/remoter/internal/mf"
 	"github.com/aleynikovich/remoter/internal/relay"
 	"github.com/aleynikovich/remoter/internal/update"
 	"github.com/aleynikovich/remoter/web"
@@ -59,7 +62,24 @@ func main() {
 	selfTest := flag.Bool("h264-selftest", false, "check that the H.264 codec works, then exit (used internally)")
 	noElevate := flag.Bool("no-elevate", false, "Windows: do not restart with administrator rights even where that needs no prompt")
 	captureTest := flag.Bool("capture-selftest", false, "check that fast screen capture works, then exit (used internally)")
+	gpuTest := flag.String("gpu-video-selftest", "", "check that the GPU's H.264 encoder works at these sizes (WxH,...), then exit (used internally)")
 	flag.Parse()
+
+	if *gpuTest != "" {
+		var sizes []image.Point
+		for _, s := range strings.Split(*gpuTest, ",") {
+			var p image.Point
+			if _, err := fmt.Sscanf(s, "%dx%d", &p.X, &p.Y); err == nil {
+				sizes = append(sizes, p)
+			}
+		}
+		name, err := mf.SelfTest(sizes...)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(name)
+		return
+	}
 
 	if *captureTest {
 		if err := capture.SelfTestDXGI(); err != nil {

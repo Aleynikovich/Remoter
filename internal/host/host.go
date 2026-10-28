@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -113,7 +114,8 @@ type Agent struct {
 	NewVideo func(w, h int) (VideoEncoder, error)
 	// VideoStatus, if set, says why NewVideo cannot be called yet (the
 	// codec may still be downloading, or failed to load). Empty means ready.
-	VideoStatus func() string
+	VideoStatus  func() string
+	restartVideo atomic.Bool
 
 	// Diagnostics, if set, returns the host's settings and recent log for
 	// viewers that ask for them.
@@ -626,7 +628,14 @@ type streamer struct {
 	changed    time.Time
 }
 
+// RestartVideo makes the stream open a new video encoder from NewVideo for
+// its next picture, as when a better encoder became available.
+func (a *Agent) RestartVideo() { a.restartVideo.Store(true) }
+
 func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error) {
+	if s.a.restartVideo.Swap(false) {
+		s.closeVideo()
+	}
 	img := toRGBA(src)
 	wantVideo := s.a.whyNoVideo() == ""
 	if wantVideo != s.usingVideo {
