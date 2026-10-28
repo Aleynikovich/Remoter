@@ -52,6 +52,11 @@ class Prefs(context: Context) {
         get() = p.getBoolean("toolbar", true)
         set(v) = p.edit().putBoolean("toolbar", v).apply()
 
+    /** Data saver turns itself on for metered networks instead of asking. */
+    var saverOnMetered: Boolean
+        get() = p.getBoolean("saverOnMetered", false)
+        set(v) = p.edit().putBoolean("saverOnMetered", v).apply()
+
     companion object {
         const val DEFAULT_COMPUTER = "100.102.208.35:8080"
         const val DEFAULT_PASSWORD = "root"

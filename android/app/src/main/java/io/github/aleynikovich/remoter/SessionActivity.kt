@@ -7,6 +7,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.res.Configuration
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -50,6 +53,21 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     private lateinit var displayButton: TextView
     private lateinit var keyboardButton: TextView
     private lateinit var qualityButton: TextView
+    private lateinit var saverButton: TextView
+    /** Data saver asked of the host, and whether the host says it is on. */
+    private var saver = false
+    private var hostSaver = false
+    /** A metered network has been offered data saver this session. */
+    private var saverAsked = false
+    private var saverDialog: AlertDialog? = null
+    /** Bytes received this session, for data saver's counter. */
+    private val sessionBytes = AtomicLong()
+    private lateinit var connectivity: ConnectivityManager
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            main.post { checkMetered() }
+        }
+    }
     /** The host's picture scale in percent, from its quality messages. */
     @Volatile private var scalePercent = 100
     private val modifierViews = mutableMapOf<String, TextView>()
@@ -86,6 +104,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         password = intent.getStringExtra(EXTRA_PASSWORD) ?: Prefs.DEFAULT_PASSWORD
         useVideo = prefs.video && VideoDecoder.supported
         clipboard = getSystemService(ClipboardManager::class.java)!!
+        connectivity = getSystemService(ConnectivityManager::class.java)!!
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.setDecorFitsSystemWindows(false)
@@ -189,6 +208,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
 
         keyboardButton = button("⌨ Keyboard") { toggleKeyboard() }
         qualityButton = button("Quality: Auto") { pickQuality() }
+        saverButton = button("Data saver: off") { setSaver(!saver) }
         modeButton = button("") { toggleMode() }
         captureButton = button("Lock mouse") { screen.capture(!screen.isCaptured) }
         displayButton = button("Screen 1") { pickDisplay() }.apply { visibility = View.GONE }
@@ -206,6 +226,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
             captureButton,
             displayButton,
             qualityButton,
+            saverButton,
             button("Send clipboard") { sendClipboard(force = true) },
             button("Test link") { testLink() },
             stats,
@@ -373,6 +394,67 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
             .show()
     }
 
+    /**
+     * Data saver, for metered networks: the host sends at most 15 fps at half
+     * resolution while any viewer asks for it.
+     */
+    private fun setSaver(on: Boolean) {
+        saver = on
+        client?.send(JSONObject().put("type", "data_saver").put("ok", on))
+        if (!on && prefs.saverOnMetered) {
+            // Undoes "Always on metered": the next metered network asks.
+            prefs.saverOnMetered = false
+            showNotice("Data saver off · it will ask again on the next metered network")
+        } else {
+            showNotice(if (on) "Data saver on: at most 15 fps, half resolution" else "Data saver off")
+        }
+        updateSaverButton()
+    }
+
+    private fun updateSaverButton() {
+        saverButton.text = "Data saver: ${if (saver) "on" else "off"} · ${dataText(sessionBytes.get())}"
+    }
+
+    /** Offers data saver the first time the session finds itself on a metered network. */
+    private fun checkMetered() {
+        if (saver || saverAsked || client?.connected != true || !metered()) return
+        saverAsked = true
+        if (prefs.saverOnMetered) {
+            setSaver(true)
+            showNotice("Metered network: data saver is on · the toolbar turns it off")
+            return
+        }
+        saverDialog = AlertDialog.Builder(this)
+            .setTitle("Metered connection")
+            .setMessage("You're on a metered connection. Switch to data saver? It sends at most 15 fps at half resolution.")
+            .setPositiveButton("Switch") { _, _ -> setSaver(true) }
+            .setNeutralButton("Always on metered") { _, _ ->
+                prefs.saverOnMetered = true
+                setSaver(true)
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
+
+    /**
+     * Whether traffic goes over a metered network. Through a VPN (Tailscale)
+     * the VPN may say it is unmetered, so the networks under it decide: any
+     * unmetered one (Wi-Fi) means not metered.
+     */
+    @Suppress("DEPRECATION")
+    private fun metered(): Boolean {
+        val active = connectivity.activeNetwork ?: return false
+        val caps = connectivity.getNetworkCapabilities(active) ?: return false
+        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+            return !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        }
+        val under = connectivity.allNetworks.mapNotNull { connectivity.getNetworkCapabilities(it) }.filter {
+            !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }
+        if (under.isEmpty()) return connectivity.isActiveNetworkMetered
+        return under.none { it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) }
+    }
+
     /** Times five pings and a 16 MiB download from the computer. */
     private fun testLink() {
         val base = try {
@@ -448,10 +530,12 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
             val f = frames.getAndSet(0)
             val b = bytes.getAndSet(0)
             stats.text = if (client?.connected == true) {
-                "%s · %d%% · %d fps · %.1f Mbit/s".format(if (videoMode == true) "H.264" else "JPEG", scalePercent, f, b * 8 / 1e6)
+                "%s · %d%% · %d fps · %.1f Mbit/s%s".format(if (videoMode == true) "H.264" else "JPEG", scalePercent, f, b * 8 / 1e6,
+                    if (hostSaver) " · data saver" else "")
             } else {
                 ""
             }
+            updateSaverButton()
             main.postDelayed(this, 1000)
         }
     }
@@ -461,12 +545,15 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     override fun onStart() {
         super.onStart()
         clipboard.addPrimaryClipChangedListener(clipListener)
+        connectivity.registerDefaultNetworkCallback(networkCallback)
         connect()
     }
 
     override fun onStop() {
         super.onStop()
         clipboard.removePrimaryClipChangedListener(clipListener)
+        connectivity.unregisterNetworkCallback(networkCallback)
+        saverDialog?.dismiss()
         keyboard.releaseAll()
         client?.close()
         client = null
@@ -495,6 +582,8 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         decoder.reset()
         decoderErrors = 0
         client?.refresh(useVideo)
+        if (saver) client?.send(JSONObject().put("type", "data_saver").put("ok", true))
+        checkMetered()
         sendClipboard()
     }
 
@@ -510,6 +599,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
 
     override fun onFrame(data: ByteArray) {
         bytes.addAndGet(data.size.toLong())
+        sessionBytes.addAndGet(data.size.toLong())
         when (data[0].toInt()) {
             'V'.code -> {
                 if (data.size < 10) return
@@ -550,6 +640,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
                 qualityButton.text = "Quality: " +
                     if (mode.toIntOrNull() != null) "$mode%" else mode.replaceFirstChar { it.uppercase() }
             }
+            "data_saver" -> hostSaver = msg.optBoolean("ok", false)
             "displays" -> {
                 displayCount = msg.optInt("count", 1).coerceAtLeast(1)
                 display = msg.optInt("display", 0)
@@ -686,6 +777,13 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     }
 
     companion object {
+        /** A byte count for people: "820 KB", "12.3 MB", "1.04 GB". */
+        fun dataText(n: Long): String = when {
+            n < 1_000_000 -> "%.0f KB".format(n / 1e3)
+            n < 1_000_000_000 -> "%.1f MB".format(n / 1e6)
+            else -> "%.2f GB".format(n / 1e9)
+        }
+
         const val EXTRA_COMPUTER = "computer"
         const val EXTRA_PASSWORD = "password"
         const val EXTRA_REASON = "reason"
