@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A monitor with a pointer, on a blue disc. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#2F6FEB" android:pathData="M54,4a50,50 0,1 1,0 100a50,50 0,1 1,0 -100z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M26,30h56a4,4 0,0 1,4 4v34a4,4 0,0 1,-4 4H26a4,4 0,0 1,-4 -4V34a4,4 0,0 1,4 -4z" />
+    <path android:fillColor="#2F6FEB" android:pathData="M28,36h52v30H28z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M46,72h16l3,8H43z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M50,42l0,20l5,-5l4,8l3,-1.5l-4,-8l7,0z" />
+</vector>

@@ -1,4 +1,4 @@
-/remoter-server
-/remoter-host
+/remoter
 *.exe
 dist/
+/remoter-viewer

@@ -1,11 +1,14 @@
 name: Release
 # Version tags (v1.2.3) publish a release. Pushes to main and to work
 # branches publish a numbered dev prerelease so builds can be tried before a
-# version is cut.
+# version is cut. Hosts install the newest one, so branches that only work on
+# the desktop viewer are left out: their host binary would replace the one from
+# the branch that is actually changing the host. Their viewer is published by
+# viewer.yml.
 on:
   push:
     tags: ["v*"]
-    branches: [main, "claude/**"]
+    branches: [main, "claude/**", "!claude/project-thread-yv34xl", "!claude/project-thread-shn7nm"]
 permissions:
   contents: write
 jobs:
@@ -19,15 +22,17 @@ jobs:
       - name: Build
         env:
           CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
         run: |
           mkdir dist
           for target in windows/amd64 linux/amd64; do
             os=${target%/*}; arch=${target#*/}
             ext=""; [ "$os" = windows ] && ext=".exe"
-            for cmd in remoter-server remoter-host; do
-              GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" \
-                -o "dist/${cmd}-${os}-${arch}${ext}" ./cmd/$cmd
-            done
+            # The version stamp is what lets the binary find newer releases
+            # and update itself.
+            GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X github.com/aleynikovich/remoter/internal/update.Version=$VERSION" \
+              -o "dist/remoter-${os}-${arch}${ext}" ./cmd/remoter
           done
           ls -l dist
       - uses: softprops/action-gh-release@v2

@@ -6,27 +6,84 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/kbinani/screenshot"
 )
 
-// Source produces screen images.
+// Source produces screen images. A source may draw into an image again
+// on the second Capture call after the one that returned it, so a caller
+// can work on one capture while taking the next.
 type Source interface {
 	Capture() (image.Image, error)
 }
 
-// Screen captures a physical display.
+// Screen captures a physical display. It uses a faster platform-specific
+// capturer where there is one and falls back to a generic one.
 type Screen struct {
-	Display int
+	mu      sync.Mutex
+	display int
+	native  nativeSource
+	started bool
+	logged  bool
+}
+
+type nativeSource interface {
+	Capture() (image.Image, error)
+	Close()
+}
+
+// NewScreen captures the display with the given index.
+func NewScreen(display int) *Screen {
+	return &Screen{display: display}
+}
+
+// Display returns the index of the display being captured.
+func (s *Screen) Display() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.display
+}
+
+// SetDisplay switches to another display from the next capture on.
+func (s *Screen) SetDisplay(display int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if display == s.display {
+		return
+	}
+	s.display = display
+	if s.native != nil {
+		s.native.Close()
+	}
+	s.native, s.started = nil, false
 }
 
 // Capture grabs the whole display.
-func (s Screen) Capture() (image.Image, error) {
-	if screenshot.NumActiveDisplays() <= s.Display {
+func (s *Screen) Capture() (image.Image, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.started {
+		s.started = true
+		s.native = newNative(s.display)
+	}
+	if s.native != nil {
+		img, err := s.native.Capture()
+		if err == nil {
+			s.logged = false
+			return img, nil
+		}
+		if !s.logged {
+			s.logged = true
+			log.Printf("fast capture failed (%v), using fallback", err)
+		}
+	}
+	if screenshot.NumActiveDisplays() <= s.display {
 		return nil, errors.New("display not found")
 	}
-	return screenshot.CaptureDisplay(s.Display)
+	return screenshot.CaptureDisplay(s.display)
 }
 
 // TestPattern draws a moving pattern. It needs no display, which makes it
@@ -56,4 +113,13 @@ func (t TestPattern) Capture() (image.Image, error) {
 	x := int(phase * float64(w-h/8))
 	draw.Draw(img, image.Rect(x, h/2-h/16, x+h/8, h/2+h/16), image.White, image.Point{}, draw.Src)
 	return img, nil
+}
+
+// screenshotDisplays lists the monitors the generic capturer sees.
+func screenshotDisplays() []image.Rectangle {
+	var rs []image.Rectangle
+	for i := range screenshot.NumActiveDisplays() {
+		rs = append(rs, screenshot.GetDisplayBounds(i))
+	}
+	return rs
 }
