@@ -31,6 +31,16 @@ show up as an update banner on the app's start screen.
   **Lock mouse** captures the pointer, Ctrl+Alt+Esc lets go.
 - Folding, unfolding, rotating and DeX keep the session; the picture refits.
 
+## Sending files
+
+Share files, photos, PDFs or links to **Remoter** from any app and pick the
+PC; the transfer runs in the background with a progress notification. PCs
+find the phone on the tailnet and send to it with `remoter send`; files land
+in Downloads with a notification (tap to open, or Share on to another app),
+text and links go to the clipboard. The receiver (`ShareService`, port 8080,
+tailnet addresses only) runs as a foreground service with a quiet
+notification and starts again after a reboot; the start screen has a switch.
+
 ## Building
 
     cd android && ./gradlew assembleRelease
