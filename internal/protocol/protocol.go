@@ -48,6 +48,11 @@ const (
 	// "balanced" or "smooth"). host -> server -> every viewer: the quality
 	// in use and the Scale (percent of full resolution) video is sent at.
 	TypeQuality = "quality"
+	// viewer -> server -> host: turn data saver on (OK set) or off for
+	// this viewer, for a metered link. host -> server -> every viewer:
+	// whether the stream is in data saver mode (OK), which it is while any
+	// viewer asks for it.
+	TypeDataSaver = "data_saver"
 	// viewer -> server -> host: send diagnostics. host -> server -> every
 	// viewer: the host's diagnostics (settings, recent log) in Text.
 	TypeDiagnostics = "diagnostics"
@@ -82,7 +87,7 @@ type Message struct {
 // type on to the host.
 func FromViewer(typ string) bool {
 	switch typ {
-	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics, TypeQuality:
+	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics, TypeQuality, TypeDataSaver:
 		return true
 	}
 	return false
@@ -92,7 +97,7 @@ func FromViewer(typ string) bool {
 // type on to every viewer.
 func ToViewers(typ string) bool {
 	switch typ {
-	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics, TypeQuality:
+	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics, TypeQuality, TypeDataSaver:
 		return true
 	}
 	return false

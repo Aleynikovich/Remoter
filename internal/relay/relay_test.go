@@ -341,7 +341,7 @@ func (v *fakeVideo) Encode(_ *image.RGBA, key bool) ([]byte, bool, error) {
 func TestVideoOnlyForViewersThatDecodeIt(t *testing.T) {
 	base, id := startHostWith(t, &host.Agent{
 		Password: "secret",
-		NewVideo: func(w, h int) (host.VideoEncoder, error) { return &fakeVideo{w &^ 1, h &^ 1}, nil },
+		NewVideo: func(w, h, kbps int) (host.VideoEncoder, error) { return &fakeVideo{w &^ 1, h &^ 1}, nil },
 	})
 	read := func(c *websocket.Conn) []byte {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -387,6 +387,51 @@ func TestVideoOnlyForViewersThatDecodeIt(t *testing.T) {
 	}
 	if !strings.Contains(m.Text, "cannot decode H.264") {
 		t.Fatalf("video status %q, want why it is off", m.Text)
+	}
+}
+
+func TestDataSaver(t *testing.T) {
+	rates := make(chan int, 16)
+	base, id := startHostWith(t, &host.Agent{
+		Password: "secret",
+		NewVideo: func(w, h, kbps int) (host.VideoEncoder, error) {
+			rates <- kbps
+			return &fakeVideo{w &^ 1, h &^ 1}, nil
+		},
+	})
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh, Video: true})
+	if m := readText(t, c, protocol.TypeDataSaver); m.OK {
+		t.Fatalf("got %+v, want data saver off", m)
+	}
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeDataSaver, OK: true})
+	if m := readText(t, c, protocol.TypeDataSaver); !m.OK {
+		t.Fatalf("got %+v, want data saver on", m)
+	}
+	if m := readText(t, c, protocol.TypeQuality); m.Scale != 50 {
+		t.Fatalf("got %+v, want video at 50%%", m)
+	}
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh, Video: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		typ, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal("no smaller video frame:", err)
+		}
+		if typ != websocket.MessageBinary {
+			continue
+		}
+		if v, err := stream.ParseVideo(data); err == nil && v.Width == 32 && v.Height == 24 {
+			break
+		}
+	}
+	reopened := false
+	for len(rates) > 0 {
+		reopened = reopened || <-rates == 1000
+	}
+	if !reopened {
+		t.Fatal("video was not reopened at the data saver rate")
 	}
 }
 

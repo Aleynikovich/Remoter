@@ -63,6 +63,18 @@ const (
 	clipboardPoll = 250 * time.Millisecond
 )
 
+// Data saver, for viewers on a metered link (a phone's mobile data): while
+// any viewer asks for it the stream runs at most saverFPS, video at most
+// saverScale percent of full resolution and saverKbps, and JPEG tiles at
+// lower qualities.
+const (
+	saverFPS     = 15
+	saverScale   = 50
+	saverKbps    = 1000
+	saverQuality = 40
+	saverRefine  = 70
+)
+
 // InputHandler applies remote input events on the host.
 type InputHandler interface {
 	HandleInput(viewer string, in protocol.Input)
@@ -114,10 +126,11 @@ type Agent struct {
 	Cursor func() string
 	// Monitors, if set, lets viewers switch between displays.
 	Monitors Monitors
-	// NewVideo, if set, starts an H.264 encoder for w×h captures. It is
-	// used while every viewer can decode H.264, and JPEG tiles otherwise.
-	// An error turns video off for the rest of the session.
-	NewVideo func(w, h int) (VideoEncoder, error)
+	// NewVideo, if set, starts an H.264 encoder for w×h captures at kbps
+	// kbit/s, or its usual rate when kbps is 0. It is used while every
+	// viewer can decode H.264, and JPEG tiles otherwise. An error turns
+	// video off for the rest of the session.
+	NewVideo func(w, h, kbps int) (VideoEncoder, error)
 	// VideoStatus, if set, says why NewVideo cannot be called yet (the
 	// codec may still be downloading, or failed to load). Empty means ready.
 	VideoStatus  func() string
@@ -151,6 +164,7 @@ type flow struct {
 	seq     uint32
 	full    bool
 	viewers map[string]*viewerState
+	savers  map[string]bool // viewers that asked for data saver
 	wake    chan struct{}
 	sentLog [2 * maxWindow]sentUpdate // by seq % len
 }
@@ -229,8 +243,31 @@ func (f *flow) refresh() {
 func (f *flow) leave(viewer string) {
 	f.mu.Lock()
 	delete(f.viewers, viewer)
+	delete(f.savers, viewer)
 	f.mu.Unlock()
 	f.poke()
+}
+
+// setSaver records whether a viewer wants data saver.
+func (f *flow) setSaver(viewer string, on bool) {
+	f.mu.Lock()
+	if on {
+		if f.savers == nil {
+			f.savers = map[string]bool{}
+		}
+		f.savers[viewer] = true
+	} else {
+		delete(f.savers, viewer)
+	}
+	f.mu.Unlock()
+	f.poke()
+}
+
+// saver reports whether any viewer wants data saver.
+func (f *flow) saver() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.savers) > 0
 }
 
 func (f *flow) ack(viewer string, seq uint32) {
@@ -474,6 +511,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.sendQuality(ctx, conn); err != nil {
 				return err
 			}
+			if err := a.sendSaver(ctx, conn); err != nil {
+				return err
+			}
 		case protocol.TypeSelectDisplay:
 			if a.Monitors == nil {
 				continue
@@ -488,10 +528,25 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		case protocol.TypeDiagnostics:
 			text := "video: " + cmp.Or(a.whyNoVideo(), "H.264 on")
+			if a.flow.saver() {
+				text += fmt.Sprintf("\ndata saver: on (at most %d fps, %d%% resolution, %d kbit/s)", saverFPS, saverScale, saverKbps)
+			}
 			if a.Diagnostics != nil {
 				text = a.Diagnostics() + "\n" + text
 			}
 			if err := send(ctx, conn, protocol.Message{Type: protocol.TypeDiagnostics, Text: text}); err != nil {
+				return err
+			}
+		case protocol.TypeDataSaver:
+			was := a.flow.saver()
+			a.flow.setSaver(m.Viewer, m.OK)
+			if now := a.flow.saver(); now != was {
+				log.Printf("viewer %s turned data saver %s", m.Viewer, map[bool]string{true: "on", false: "off"}[now])
+			}
+			if err := a.sendSaver(ctx, conn); err != nil {
+				return err
+			}
+			if err := a.sendQuality(ctx, conn); err != nil {
 				return err
 			}
 		case protocol.TypeQuality:
@@ -503,7 +558,17 @@ func (a *Agent) Run(ctx context.Context) error {
 		case protocol.TypeClipboard:
 			a.setClipboard(m.Text)
 		case protocol.TypeViewerLeft:
+			was := a.flow.saver()
 			a.flow.leave(m.Viewer)
+			if was && !a.flow.saver() {
+				log.Print("data saver off: its viewer left")
+				if err := a.sendSaver(ctx, conn); err != nil {
+					return err
+				}
+				if err := a.sendQuality(ctx, conn); err != nil {
+					return err
+				}
+			}
 			if r, ok := a.Input.(releaser); ok {
 				r.ReleaseAll(m.Viewer)
 			}
@@ -555,7 +620,11 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 			}
 			wait = time.Until(next)
 		}
-		next = time.Now().Add(interval)
+		if a.flow.saver() {
+			next = time.Now().Add(max(interval, time.Second/saverFPS))
+		} else {
+			next = time.Now().Add(interval)
+		}
 
 		t0 := time.Now()
 		img, err := a.Source.Capture()
@@ -604,7 +673,7 @@ type frame struct {
 
 // encodeAndSend encodes the captures it is handed and sends them.
 func (a *Agent) encodeAndSend(ctx context.Context, conn *websocket.Conn, frames <-chan frame) error {
-	st := &streamer{a: a, tiles: &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter}}
+	st := &streamer{a: a, tiles: &stream.Encoder{RefineAfter: refineAfter}, quality: a.Quality, refine: a.RefineQuality}
 	defer st.closeVideo()
 	tm := timings{start: time.Now()}
 	for f := range frames {
@@ -617,8 +686,7 @@ func (a *Agent) encodeAndSend(ctx context.Context, conn *websocket.Conn, frames 
 			}
 		default:
 		}
-		_, scale := a.res.current()
-		tm.report(st.usingVideo, scale, a.flow.summary)
+		tm.report(st.usingVideo, a.scale(), a.flow.summary)
 		tm.size = f.img.Bounds().Size()
 		tm.wait += f.wait
 		tm.capture += f.capture
@@ -683,10 +751,13 @@ type streamer struct {
 	buf   []byte
 
 	video      VideoEncoder
+	kbps       int // the bit rate video was opened at, 0 for the usual
 	usingVideo bool
-	scaled     *image.RGBA // the capture shrunk to the quality's scale
-	prev       []byte      // last capture, to skip encoding a still screen
-	changed    time.Time
+	// quality and refine are the JPEG qualities when data saver is off.
+	quality, refine int
+	scaled          *image.RGBA // the capture shrunk to the quality's scale
+	prev            []byte      // last capture, to skip encoding a still screen
+	changed         time.Time
 }
 
 // RestartVideo makes the stream open a new video encoder from NewVideo for
@@ -706,7 +777,13 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 			s.closeVideo()
 		}
 	}
+	saver := s.a.flow.saver()
 	if !wantVideo {
+		s.tiles.Quality, s.tiles.RefineQuality = s.quality, s.refine
+		if saver {
+			s.tiles.Quality = min(s.quality, saverQuality)
+			s.tiles.RefineQuality = min(s.refine, saverRefine)
+		}
 		u, err := s.tiles.Encode(img, full, time.Now())
 		if u == nil || err != nil {
 			return nil, err
@@ -726,20 +803,25 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 	}
 
 	start := time.Now()
-	if _, scale := s.a.res.current(); scale < 100 {
+	if scale := s.a.scale(); scale < 100 {
 		w := max(img.Rect.Dx()*scale/100&^1, 16)
 		h := max(img.Rect.Dy()*scale/100&^1, 16)
 		s.scaled = stream.Downscale(s.scaled, img, w, h)
 		img = s.scaled
 	}
 	w, h := img.Rect.Dx(), img.Rect.Dy()
+	kbps := 0
+	if saver {
+		kbps = saverKbps
+	}
 	if s.video != nil {
-		if vw, vh := s.video.Size(); vw != w&^1 || vh != h&^1 {
+		if vw, vh := s.video.Size(); vw != w&^1 || vh != h&^1 || kbps != s.kbps {
 			s.closeVideo()
 		}
 	}
 	if s.video == nil {
-		v, err := s.a.NewVideo(w, h)
+		v, err := s.a.NewVideo(w, h, kbps)
+		s.kbps = kbps
 		if err != nil {
 			log.Printf("H.264 unavailable, sending JPEG: %v", err)
 			s.a.turnOffVideo(err)
@@ -842,10 +924,24 @@ func (a *Agent) turnOffVideo(err error) {
 	a.videoMu.Unlock()
 }
 
+// scale is the percentage of full resolution video is encoded at.
+func (a *Agent) scale() int {
+	_, scale := a.res.current()
+	if a.flow.saver() {
+		scale = min(scale, saverScale)
+	}
+	return scale
+}
+
 // sendQuality tells viewers which quality is in use and at what scale.
 func (a *Agent) sendQuality(ctx context.Context, conn *websocket.Conn) error {
-	mode, scale := a.res.current()
-	return send(ctx, conn, protocol.Message{Type: protocol.TypeQuality, Text: mode, Scale: scale})
+	mode, _ := a.res.current()
+	return send(ctx, conn, protocol.Message{Type: protocol.TypeQuality, Text: mode, Scale: a.scale()})
+}
+
+// sendSaver tells viewers whether data saver is on.
+func (a *Agent) sendSaver(ctx context.Context, conn *websocket.Conn) error {
+	return send(ctx, conn, protocol.Message{Type: protocol.TypeDataSaver, OK: a.flow.saver()})
 }
 
 // sendDisplays tells viewers which displays they can switch between.

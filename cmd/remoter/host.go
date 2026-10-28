@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -121,27 +122,27 @@ func newAgent(o hostOptions) *host.Agent {
 			status.Store("")
 		}()
 		a.VideoStatus = func() string { return status.Load().(string) }
-		cpu := func(w, h int) (host.VideoEncoder, error) {
-			e, err := h264.NewEncoder(w, h, o.kbps, o.fps)
+		cpu := func(w, h, kbps int) (host.VideoEncoder, error) {
+			e, err := h264.NewEncoder(w, h, cmp.Or(kbps, o.kbps), o.fps)
 			if err == nil {
 				videoEncoder.Store("OpenH264 on the CPU")
 			}
 			return e, err
 		}
-		a.NewVideo = func(w, h int) (host.VideoEncoder, error) {
+		a.NewVideo = func(w, h, kbps int) (host.VideoEncoder, error) {
 			if !gpuVideo.Load() {
-				return cpu(w, h)
+				return cpu(w, h, kbps)
 			}
-			e, err := mf.NewEncoder(w, h, o.kbps)
+			e, err := mf.NewEncoder(w, h, cmp.Or(kbps, o.kbps))
 			if err != nil {
 				log.Printf("GPU H.264 encoder off, using the CPU: %v", err)
 				gpuVideo.Store(false)
-				return cpu(w, h)
+				return cpu(w, h, kbps)
 			}
 			if videoEncoder.Swap(e.Name()+" on the GPU") != e.Name()+" on the GPU" {
 				log.Printf("H.264 encoding on the GPU with %s", e.Name())
 			}
-			return &fallbackVideo{VideoEncoder: e, fallback: cpu}, nil
+			return &fallbackVideo{VideoEncoder: e, fallback: func(w, h int) (host.VideoEncoder, error) { return cpu(w, h, kbps) }}, nil
 		}
 		if runtime.GOOS == "windows" {
 			go func() {
