@@ -158,6 +158,31 @@ the same idea is a `mode "passthrough"` with only a binding to leave it.
   which character is typed. Shortcuts the browser keeps for itself (such as
   Ctrl+W) cannot be forwarded.
 
+## Sending files between your devices
+
+Like KDE Connect, but over Tailscale and built into Remoter: share a PDF or
+photo from the phone to a PC, send one from the PC to the phone, or send a
+link or the clipboard either way. Only devices on your tailnet can send.
+
+- **Windows:** the Remoter you already run receives. Files go to Downloads
+  with a notification; text and links go to the clipboard.
+- **Linux:** install the receiver as a systemd user service:
+
+      curl -fsSL https://raw.githubusercontent.com/aleynikovich/remoter/main/scripts/install-share.sh | sh
+
+  Then `remoter send file.pdf`, `remoter send -text https://…`,
+  `remoter send -clipboard`, or `remoter send` alone for a file chooser
+  (bind it to a key; the script prints Hyprland lines). With several
+  devices a launcher menu (fuzzel, wofi, rofi…) asks which; phones come
+  first. http://localhost:8080/share/ takes dropped or pasted files.
+- **Android:** share anything to **Remoter** and pick the PC. The app
+  receives in the background (a quiet notification says so; switch it off
+  on the start screen) into Downloads.
+
+The API is plain HTTP on port 8080 (`internal/share`): `GET /share/info`,
+`POST /share/file?name=…`, `POST /share/text`, with the sender in an
+`X-Remoter-From` header.
+
 ## Development
 
 ```sh

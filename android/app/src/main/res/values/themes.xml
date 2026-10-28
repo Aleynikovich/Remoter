@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Remoter" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:colorAccent">#4C8DFF</item>
+        <item name="android:windowBackground">#111318</item>
+        <item name="android:statusBarColor">#111318</item>
+        <item name="android:navigationBarColor">#111318</item>
+    </style>
+
+    <style name="Theme.Remoter.Session">
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">always</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
+    <!-- The share sheet's "Send to" picker floats over the app it came from. -->
+    <style name="Theme.Remoter.Share" parent="@android:style/Theme.DeviceDefault.Dialog.NoActionBar">
+        <item name="android:colorAccent">#4C8DFF</item>
+        <item name="android:windowBackground">@drawable/dialog_bg</item>
+        <item name="android:windowCloseOnTouchOutside">true</item>
+    </style>
+</resources>

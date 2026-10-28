@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remoter Send</title>
+<style>
+  :root { color-scheme: dark; --bg: #111318; --card: #1b1f27; --line: #2c3240; --text: #e6e8ee; --dim: #9aa3b2; --accent: #4c8dff; --ok: #34d399; --bad: #ff9b9b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif; min-height: 100vh; display: flex; flex-direction: column; }
+  main { flex: 1; display: flex; flex-direction: column; gap: 14px; padding: 18px; max-width: 720px; width: 100%; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0; }
+  .targets { display: flex; flex-wrap: wrap; gap: 8px; }
+  .targets button { background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; font: inherit; cursor: pointer; }
+  .targets button.on { border-color: var(--accent); background: #1d2b47; }
+  .dim { color: var(--dim); }
+  #drop { flex: 1; min-height: 220px; border: 2px dashed var(--line); border-radius: 14px; display: flex; align-items: center; justify-content: center; text-align: center; padding: 20px; cursor: pointer; }
+  body.over #drop { border-color: var(--accent); background: #16213a; }
+  .row { display: flex; gap: 8px; }
+  textarea { flex: 1; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 10px; font: inherit; resize: vertical; min-height: 44px; }
+  .row button { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 0 18px; font: inherit; cursor: pointer; }
+  #log { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Send to your devices</h1>
+  <div class="targets" id="targets"><span class="dim">Looking for devices…</span></div>
+  <div id="drop">Drop files here, paste (Ctrl+V) a screenshot, or click to choose files</div>
+  <input type="file" id="pick" multiple hidden>
+  <div class="row">
+    <textarea id="text" placeholder="Text or a link"></textarea>
+    <button id="sendText">Send</button>
+  </div>
+  <div id="log"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let targets = [], chosen = null;
+try { chosen = localStorage.getItem("to"); } catch (e) {}
+
+function log(msg, cls) {
+  const d = document.createElement("div");
+  d.textContent = msg;
+  if (cls) d.className = cls;
+  $("log").prepend(d);
+  return d;
+}
+
+async function loadTargets() {
+  try {
+    const r = await fetch("targets");
+    if (!r.ok) throw new Error(await r.text());
+    targets = (await r.json()).targets;
+  } catch (e) {
+    $("targets").innerHTML = "";
+    $("targets").append(Object.assign(document.createElement("span"), { className: "bad", textContent: "Cannot list devices: " + e.message }));
+    return;
+  }
+  if (!targets.some((t) => t.ip === chosen)) chosen = targets.length ? targets[0].ip : null;
+  const box = $("targets");
+  box.innerHTML = "";
+  if (!targets.length) {
+    box.append(Object.assign(document.createElement("span"), { className: "dim", textContent: "No device is receiving. Open Remoter on the phone." }));
+  }
+  for (const t of targets) {
+    const b = document.createElement("button");
+    b.textContent = t.name + (t.os ? " · " + t.os : "");
+    b.className = t.ip === chosen ? "on" : "";
+    b.onclick = () => { chosen = t.ip; try { localStorage.setItem("to", chosen); } catch (e) {} loadTargets(); };
+    box.append(b);
+  }
+}
+
+function target() {
+  const t = targets.find((t) => t.ip === chosen);
+  if (!t) log("Pick a device first.", "bad");
+  return t;
+}
+
+function upload(file, t, index, count) {
+  return new Promise((resolve) => {
+    const line = log(`${file.name} → ${t.name}: 0%`);
+    const x = new XMLHttpRequest();
+    const q = new URLSearchParams({ to: t.ip, name: file.name || "pasted.png", index, count });
+    x.open("POST", "send?" + q);
+    x.setRequestHeader("X-Remoter-Send", "1");
+    x.upload.onprogress = (e) => { if (e.lengthComputable) line.textContent = `${file.name} → ${t.name}: ${Math.round(e.loaded * 100 / e.total)}%`; };
+    x.onload = () => {
+      const ok = x.status < 300;
+      line.textContent = ok ? `Sent ${file.name} to ${t.name}` : `${file.name}: ${x.responseText.trim() || x.status}`;
+      line.className = ok ? "ok" : "bad";
+      resolve();
+    };
+    x.onerror = () => { line.textContent = `${file.name}: connection failed`; line.className = "bad"; resolve(); };
+    x.send(file);
+  });
+}
+
+async function sendFiles(files) {
+  const t = target();
+  if (!t || !files.length) return;
+  for (let i = 0; i < files.length; i++) await upload(files[i], t, i + 1, files.length);
+}
+
+async function sendText() {
+  const t = target(), text = $("text").value;
+  if (!t || !text.trim()) return;
+  const r = await fetch("send?" + new URLSearchParams({ to: t.ip, text: 1 }), { method: "POST", headers: { "X-Remoter-Send": "1" }, body: text });
+  if (r.ok) { log(`Sent text to ${t.name}`, "ok"); $("text").value = ""; }
+  else log("Text: " + (await r.text()), "bad");
+}
+
+$("drop").onclick = () => $("pick").click();
+$("pick").onchange = () => { sendFiles([...$("pick").files]); $("pick").value = ""; };
+$("sendText").onclick = sendText;
+$("text").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) sendText(); };
+addEventListener("dragover", (e) => { e.preventDefault(); document.body.classList.add("over"); });
+addEventListener("dragleave", (e) => { if (!e.relatedTarget) document.body.classList.remove("over"); });
+addEventListener("drop", (e) => { e.preventDefault(); document.body.classList.remove("over"); sendFiles([...e.dataTransfer.files]); });
+addEventListener("paste", (e) => {
+  if (e.target === $("text")) return;
+  const files = [...e.clipboardData.files];
+  if (files.length) { e.preventDefault(); sendFiles(files); }
+});
+loadTargets();
+setInterval(loadTargets, 30000);
+</script>
+</body>
+</html>
