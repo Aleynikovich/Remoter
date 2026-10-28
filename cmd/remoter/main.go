@@ -63,6 +63,10 @@ func main() {
 	noElevate := flag.Bool("no-elevate", false, "Windows: do not restart with administrator rights even where that needs no prompt")
 	captureTest := flag.Bool("capture-selftest", false, "check that fast screen capture works, then exit (used internally)")
 	gpuTest := flag.String("gpu-video-selftest", "", "check that the GPU's H.264 encoder works at these sizes (WxH,...), then exit (used internally)")
+	service := flag.Bool("service", false, "Windows: run as the boot service (used internally)")
+	serviceHostFlag := flag.Bool("service-host", false, "run the host started by the boot service (used internally)")
+	installSvc := flag.Bool("install-service", false, "Windows: start Remoter at boot, before sign-in, as a service")
+	uninstallSvc := flag.Bool("uninstall-service", false, "Windows: stop starting at boot (Remoter still starts when you sign in)")
 	flag.Parse()
 
 	if *gpuTest != "" {
@@ -98,6 +102,16 @@ func main() {
 		fmt.Println(version())
 		return
 	}
+	if *service {
+		if err := runService(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *installSvc || *uninstallSvc {
+		manageService(*installSvc)
+		return
+	}
 	runServer, runAgent := *mode == "all" || *mode == "server", *mode == "all" || *mode == "host"
 	shareOnly := *mode == "share"
 	if !runServer && !runAgent && !shareOnly {
@@ -126,6 +140,18 @@ func main() {
 		fmt.Println("Remoter stopped.")
 		return
 	}
+	// While the boot service is running AND actually serving, it owns the
+	// single running copy, so a copy started at login (or by hand) steps
+	// aside rather than fighting for the port. The serving check matters:
+	// if the service is up but its host never came on screen, this copy
+	// takes over instead, so a broken service cannot leave the computer
+	// unreachable once someone signs in.
+	if backgroundSupported && !*serviceHostFlag && serviceRunning() {
+		if _, ok := runningVersion(*addr); ok {
+			fmt.Println("Remoter is already running from boot (the Remoter service).")
+			return
+		}
+	}
 	// The flags the user chose, kept for restarts and for starting at login.
 	userArgs := withoutFlags(os.Args[1:], "background", "console", "no-elevate")
 	if backgroundSupported && !*console && !*background {
@@ -137,7 +163,7 @@ func main() {
 	}
 	// Without administrator rights Windows silently drops input sent to
 	// admin windows. Where that takes no prompt, restart with them.
-	if *background && !*noElevate && runAgent && !isAdmin() && canElevateSilently() {
+	if *background && !*noElevate && !*serviceHostFlag && runAgent && !isAdmin() && canElevateSilently() {
 		if exe, err := os.Executable(); err == nil {
 			if err := startElevated(exe, append(os.Args[1:], "-no-elevate")); err == nil {
 				return
@@ -170,9 +196,14 @@ func main() {
 		go update.Cleanup(exe)
 		go keepUpdated(ctx, exe, *checkEvery, restart)
 	}
-	if *background && exe != "" && update.Version != "" {
+	if *background && exe != "" && update.Version != "" && !*serviceHostFlag {
 		if err := setAutostart(!*noAutostart, exe, userArgs); err != nil {
 			log.Printf("could not set up starting at login: %v", err)
+		}
+		// Also keep it running from boot, before sign-in, when we can. The
+		// login entry above stays as the fallback if this does not take.
+		if serviceSupported && !*noAutostart {
+			ensureService()
 		}
 	}
 
@@ -191,6 +222,12 @@ func main() {
 	if runAgent {
 		ho.id = os.Getenv(idEnv)
 		a := newAgent(ho)
+		if *serviceHostFlag {
+			// Started by the boot service outside any signed-in session:
+			// keep capture and input on whatever desktop has focus, so the
+			// sign-in and lock screens work too.
+			a.Source, a.Input = followInputDesktop(a.Source, a.Input)
+		}
 		agentID = func() string { return a.ID }
 		go func() {
 			runHost(ctx, a)
@@ -228,6 +265,24 @@ var (
 	errRestart = errors.New("restart for update")
 	errStop    = errors.New("stopped by another Remoter")
 )
+
+// manageService installs or removes the boot service for -install-service /
+// -uninstall-service.
+func manageService(install bool) {
+	if install {
+		if err := installService(); err != nil {
+			fmt.Println("Could not set Remoter to start at boot:", err)
+			os.Exit(1)
+		}
+		fmt.Println("Remoter now starts at boot, before you sign in.")
+		return
+	}
+	if err := uninstallService(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	fmt.Println("Remoter no longer starts at boot; it still starts when you sign in.")
+}
 
 func version() string {
 	if update.Version == "" {
