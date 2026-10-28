@@ -13,4 +13,11 @@
         <item name="android:windowActionBar">false</item>
         <item name="android:windowNoTitle">true</item>
     </style>
+
+    <!-- The share sheet's "Send to" picker floats over the app it came from. -->
+    <style name="Theme.Remoter.Share" parent="@android:style/Theme.DeviceDefault.Dialog.NoActionBar">
+        <item name="android:colorAccent">#4C8DFF</item>
+        <item name="android:windowBackground">@drawable/dialog_bg</item>
+        <item name="android:windowCloseOnTouchOutside">true</item>
+    </style>
 </resources>

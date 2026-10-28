@@ -44,6 +44,7 @@ class ConnectActivity : Activity() {
         prefs = Prefs(this)
         buildViews()
         checkForUpdate()
+        startSharing()
     }
 
     override fun onResume() {
@@ -129,6 +130,16 @@ class ConnectActivity : Activity() {
             isChecked = prefs.video
             setOnCheckedChangeListener { _, on -> prefs.video = on }
             setPadding(dp(4), dp(20), 0, 0)
+        })
+        column.addView(CheckBox(this).apply {
+            text = "Receive files and links from your PCs (saved to Downloads)"
+            setTextColor(0xFFD0D4DC.toInt())
+            isChecked = SharePrefs(this@ConnectActivity).receive
+            setOnCheckedChangeListener { _, on ->
+                SharePrefs(this@ConnectActivity).receive = on
+                if (on) startSharing() else startService(Intent(this@ConnectActivity, ShareService::class.java).setAction(ShareService.ACTION_STOP))
+            }
+            setPadding(dp(4), dp(12), 0, 0)
         })
         column.addView(text(13f, 0xFF9AA3B2.toInt(), HELP).apply { setPadding(0, dp(16), 0, 0) })
 
@@ -361,6 +372,17 @@ class ConnectActivity : Activity() {
         }
     }
 
+    /** Runs the file sharing receiver; Android 13+ asks once to allow its notifications. */
+    private fun startSharing() {
+        if (!SharePrefs(this).receive) return
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 2)
+        }
+        ShareService.start(this)
+    }
+
     // ---- Updates ----
 
     private fun checkForUpdate() {
@@ -412,6 +434,7 @@ class ConnectActivity : Activity() {
             "Direct touch: tap to click where you touch, long-press for right click.\n" +
             "Both: pinch to zoom, two fingers to scroll, two-finger tap for right click, " +
             "three fingers to pan, three-finger tap for the keyboard.\n\n" +
-            "With a mouse (DeX or Bluetooth), Lock mouse captures it; Ctrl+Alt+Esc lets go."
+            "With a mouse (DeX or Bluetooth), Lock mouse captures it; Ctrl+Alt+Esc lets go.\n\n" +
+            "To send files, photos or links to a PC, share them to Remoter from any app."
     }
 }
