@@ -59,6 +59,9 @@ function connect(id, password) {
       canvas.style.cursor = msg.cursor;
     } else if (msg.type === "diagnostics") {
       showDiagnostics(msg.text || "");
+    } else if (msg.type === "quality") {
+      $("quality").value = msg.text || "auto";
+      stats.scale = msg.scale || 100;
     } else if (msg.type === "video") {
       stats.hostWhy = msg.text || "";
     } else if (msg.type === "displays") {
@@ -245,13 +248,14 @@ function codecFromSPS(data) {
 
 // Frame rate and bandwidth, shown next to the session label.
 // On JPEG the reason video is off is shown too, in full on hover.
-const stats = { frames: 0, bytes: 0, mode: "", hostWhy: "", decodeMs: 0, decoded: 0, queue: 0, history: [] };
+const stats = { frames: 0, bytes: 0, mode: "", hostWhy: "", decodeMs: 0, decoded: 0, queue: 0, history: [], scale: 100 };
 setInterval(() => {
   if (!ws) return;
   let mode = stats.mode;
   let why = "";
   if (mode === "JPEG") why = browserWhy || stats.hostWhy;
   if (why) mode += ` (no H.264: ${why.length > 60 ? why.slice(0, 57) + "…" : why})`;
+  if (stats.mode === "H.264" && stats.scale < 100) mode += ` · ${stats.scale}%`;
   $("stats").textContent = `${stats.frames} fps · ${(stats.bytes * 8 / 1e6).toFixed(1)} Mbit/s · ${mode}`;
   $("stats").title = why ? `Sending JPEG because ${why}` : "";
   const decode = stats.decoded ? ` · decode ${(stats.decodeMs / stats.decoded).toFixed(1)} ms · queue ${stats.queue}` : "";
@@ -470,6 +474,8 @@ $("diag").addEventListener("click", async () => {
     `viewer: ${navigator.userAgent}`,
     `page: ${location.origin}, secure context ${window.isSecureContext}, H.264 decode ${v}${browserWhy ? ` (${browserWhy})` : ""}`,
     `screen: canvas ${canvas.width}x${canvas.height}, window ${innerWidth}x${innerHeight} @${devicePixelRatio}x, ${actualSize ? "1:1" : "fit"}`,
+    `quality: ${$("quality").value}, video at ${stats.scale}% of full resolution`,
+    ...(linkResult ? [linkResult] : []),
     "--- last minute in this viewer ---",
     ...stats.history,
   ].join("\n");
@@ -492,3 +498,45 @@ $("diag-copy").addEventListener("click", () => {
   setTimeout(() => { $("diag-copy").textContent = "Copy"; }, 1500);
 });
 $("diag-close").addEventListener("click", () => $("diag-dialog").close());
+
+// Quality: the host scales video down to keep up; Auto picks the scale.
+$("quality").addEventListener("change", () => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "quality", text: $("quality").value }));
+  canvas.focus();
+});
+
+// Link test: latency and download speed from the remote computer.
+let linkResult = "";
+$("diag-link").addEventListener("click", async () => {
+  const b = $("diag-link");
+  b.disabled = true;
+  try {
+    b.textContent = "Measuring ping…";
+    const pings = [];
+    for (let i = 0; i < 5; i++) {
+      const t = performance.now();
+      await (await fetch(`ping?${Date.now()}`, { cache: "no-store" })).text();
+      pings.push(performance.now() - t);
+    }
+    pings.sort((x, y) => x - y);
+    b.textContent = "Measuring speed…";
+    const t = performance.now();
+    const res = await fetch(`speedtest?mb=16&${Date.now()}`, { cache: "no-store" });
+    const reader = res.body.getReader();
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      got += value.length;
+    }
+    const secs = (performance.now() - t) / 1000;
+    linkResult = `link test: ping ${pings[0].toFixed(0)}-${pings[pings.length - 1].toFixed(0)} ms (median ${pings[2].toFixed(0)}), download ${(got * 8 / 1e6 / secs).toFixed(0)} Mbit/s (${(got / 1048576).toFixed(0)} MB in ${secs.toFixed(1)} s)`;
+  } catch (err) {
+    linkResult = `link test failed: ${err}`;
+  } finally {
+    b.disabled = false;
+    b.textContent = "Test link";
+  }
+  const t = $("diag-text");
+  t.value = `${linkResult}\n${t.value}`;
+});

@@ -226,6 +226,8 @@ func startServer(ctx context.Context, addr string, stop func()) (*http.Server, e
 		fmt.Fprint(w, version())
 	})
 	mux.Handle("/shutdown", shutdownHandler(stop))
+	mux.HandleFunc("/ping", pingHandler)
+	mux.HandleFunc("/speedtest", speedtestHandler)
 	// Viewers that cannot ask Tailscale themselves list the tailnet here.
 	_, port, _ := net.SplitHostPort(addr)
 	mux.Handle("/devices", devicesHandler(cmp.Or(port, "8080")))
