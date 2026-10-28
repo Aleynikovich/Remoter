@@ -1,8 +1,10 @@
 #!/bin/sh
-# Installs Remoter file sharing for the current user on Linux, so your phone
-# and PCs can send each other files, photos, PDFs and links:
-#   ~/.local/bin/remoter                    the program (keeps itself up to date)
-#   remoter-share.service (systemd --user)  receives into ~/Downloads with a notification
+# Installs Remoter for the current user on Linux: this PC can then be viewed
+# and controlled from your other devices (password "root", tailnet only for
+# file sharing), and your phone and PCs can send each other files, photos,
+# PDFs and links:
+#   ~/.local/bin/remoter              the program (keeps itself up to date)
+#   remoter.service (systemd --user)  the host, and receiving into ~/Downloads
 #   "Send to phone" in the application menu and the file manager's Open With
 # Run it again to reinstall.
 #
@@ -42,13 +44,16 @@ curl -fL --progress-bar -o "$bin/remoter.new" "$url"
 chmod 755 "$bin/remoter.new"
 mv -f "$bin/remoter.new" "$bin/remoter"
 
-cat >"$units/remoter-share.service" <<UNIT
+# Set REMOTER_ARGS to change the flags, e.g. REMOTER_ARGS="-mode share" to
+# only receive files, or -password something-else.
+args=${REMOTER_ARGS:--password root}
+cat >"$units/remoter.service" <<UNIT
 [Unit]
-Description=Remoter: receive files and links from your phone and other PCs
+Description=Remoter: share this PC, and receive files and links from your phone and other PCs
 After=network-online.target
 
 [Service]
-ExecStart=$bin/remoter -mode share
+ExecStart=$bin/remoter $args
 Restart=always
 RestartSec=3
 
@@ -90,18 +95,24 @@ fi
 # The service needs the desktop session's variables to open files and copy
 # to the clipboard; take them from this session now.
 systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP HYPRLAND_INSTANCE_SIGNATURE 2>/dev/null || true
+# Earlier versions of this script installed a receive-only service.
+if [ -f "$units/remoter-share.service" ]; then
+	systemctl --user disable --now remoter-share.service >/dev/null 2>&1 || true
+	rm -f "$units/remoter-share.service"
+fi
 systemctl --user daemon-reload
-systemctl --user enable remoter-share.service >/dev/null 2>&1
-systemctl --user restart remoter-share.service
+systemctl --user enable remoter.service >/dev/null 2>&1
+systemctl --user restart remoter.service
 echo "Installed $("$bin/remoter" -version) to $bin/remoter; receiving into $(xdg-user-dir DOWNLOAD 2>/dev/null || echo ~/Downloads)"
 
 missing=""
 command -v notify-send >/dev/null || missing="$missing libnotify-bin"
 command -v wl-copy >/dev/null || missing="$missing wl-clipboard"
 command -v zenity >/dev/null || command -v kdialog >/dev/null || missing="$missing zenity"
+ldconfig -p 2>/dev/null | grep -q libopenh264 || missing="$missing libopenh264-7"
 if [ -n "$missing" ]; then
 	echo
-	echo "For notifications, the clipboard and the file chooser, install:"
+	echo "For notifications, the clipboard, the file chooser and H.264 video, install:"
 	echo "  sudo apt install$missing"
 fi
 
@@ -116,5 +127,6 @@ Hyprland key bindings (add to ~/.config/hypr/hyprland.conf):
   bind = SUPER CTRL, S, exec, grim -g "\$(slurp)" /tmp/remoter-shot.png && $bin/remoter send /tmp/remoter-shot.png
   # so files open from notifications after a reboot, if not already there:
   exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
+Logs: journalctl --user -u remoter -f
 Drop or paste files at http://localhost:8080/share/ (menu: "Remoter Send (drop files)").
 HELP

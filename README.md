@@ -185,7 +185,8 @@ link or the clipboard either way. Only devices on your tailnet can send.
 
 - **Windows:** the Remoter you already run receives. Files go to Downloads
   with a notification; text and links go to the clipboard.
-- **Linux:** install the receiver as a systemd user service:
+- **Linux:** install Remoter as a systemd user service (it also shares the
+  desktop, see below; `REMOTER_ARGS="-mode share"` for receiving only):
 
       curl -fsSL https://raw.githubusercontent.com/aleynikovich/remoter/main/scripts/install-share.sh | sh
 
