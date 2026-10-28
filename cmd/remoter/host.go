@@ -85,8 +85,12 @@ func newAgent(o hostOptions) *host.Agent {
 		Cursor:    cursor.Shape,
 		Monitors:  mons,
 		Diagnostics: func() string {
-			return fmt.Sprintf("Remoter %s on %s/%s, %d CPUs, administrator %v\nsettings: fps %d, bitrate %d kbit/s, JPEG quality %d, display %d, video off %v\n--- recent log ---\n%s",
-				version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), isAdmin(), o.fps, o.kbps, o.quality, o.display, o.noVideo, diag.Log)
+			fps := "no limit"
+			if o.fps > 0 {
+				fps = fmt.Sprint(o.fps)
+			}
+			return fmt.Sprintf("Remoter %s on %s/%s, %d CPUs, administrator %v\nsettings: fps %s, bitrate %d kbit/s, JPEG quality %d, display %d, video off %v\n--- recent log ---\n%s",
+				version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), isAdmin(), fps, o.kbps, o.quality, o.display, o.noVideo, diag.Log)
 		},
 		OnRegistered: func(id string) {
 			if id == shown {

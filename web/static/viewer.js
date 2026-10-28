@@ -60,7 +60,9 @@ function connect(id, password) {
     } else if (msg.type === "diagnostics") {
       showDiagnostics(msg.text || "");
     } else if (msg.type === "quality") {
-      $("quality").value = msg.text || "auto";
+      const q = $("quality"), want = msg.text || "auto";
+      if (![...q.options].some((o) => o.value === want)) q.add(new Option(want, want));
+      q.value = want;
       stats.scale = msg.scale || 100;
     } else if (msg.type === "video") {
       stats.hostWhy = msg.text || "";

@@ -187,14 +187,15 @@ func TestHostWaitsForAcks(t *testing.T) {
 	c, _ := dialViewer(t, base, id, "secret")
 	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
 
-	for range 3 {
+	const window = 5 // as in package host
+	for range window {
 		readUpdate(t, c)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	_, _, err := c.Read(ctx)
 	cancel()
 	if err == nil {
-		t.Fatal("host sent a 4th update without an ack")
+		t.Fatalf("host sent update %d without an ack", window+1)
 	}
 	// The timed-out read closed the connection, so reconnect to check
 	// that acks let updates through again.

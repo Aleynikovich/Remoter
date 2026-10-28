@@ -274,11 +274,13 @@ func newDXGI(display int) (d *dxgi, err error) {
 }
 
 // Capture returns the desktop as of now. When nothing changed since the
-// last call it returns the same image again.
+// last call, it waits up to 50 ms and then returns the same image again.
 func (d *dxgi) Capture() (image.Image, error) {
 	var info [frameInfoSize]byte
 	var res unsafe.Pointer // IDXGIResource
-	timeout := uintptr(0)
+	// Wait for the next frame, so an uncapped stream runs at the
+	// display's rate instead of copying the same picture again and again.
+	timeout := uintptr(50)
 	if !d.have {
 		timeout = 500 // the first frame can take a moment
 	}
