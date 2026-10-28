@@ -39,7 +39,8 @@ const (
 	// Cursor, a CSS cursor name.
 	TypeCursor = "cursor"
 	// host -> server -> every viewer: the host has Count displays and is
-	// showing Display (0-based).
+	// showing Display (0-based). With All set the host can also show every
+	// display at once, as Display Count; a viewer selects that the same way.
 	TypeDisplays = "displays"
 	// host -> server -> every viewer: why the host sends JPEG instead of
 	// H.264 video, in Text; empty when it can send video.
@@ -79,6 +80,7 @@ type Message struct {
 	Display  int    `json:"display,omitempty"`
 	Count    int    `json:"count,omitempty"`
 	Scale    int    `json:"scale,omitempty"`
+	All      bool   `json:"all,omitempty"`
 	// Video is set on TypeRefresh when the viewer can decode H.264.
 	Video bool `json:"video,omitempty"`
 }

@@ -28,6 +28,8 @@ type windowsSource struct {
 }
 
 const (
+	// dxgiWait is how long a capture waits for the desktop to change.
+	dxgiWait      = 50 * time.Millisecond
 	dxgiRetry     = 3 * time.Second
 	dxgiLostRetry = 200 * time.Millisecond
 )
@@ -61,6 +63,13 @@ func SelfTestDXGI() error {
 }
 
 func (s *windowsSource) Capture() (image.Image, error) {
+	img, _, err := s.CaptureWait(dxgiWait)
+	return img, err
+}
+
+// CaptureWait waits up to wait for the desktop to change. fresh is false
+// when it did not and img is the last picture again.
+func (s *windowsSource) CaptureWait(wait time.Duration) (img image.Image, fresh bool, err error) {
 	if s.dxgi == nil && dxgiAllowed.Load() && time.Now().After(s.retry) {
 		d, err := newDXGI(s.display)
 		if err != nil {
@@ -72,12 +81,13 @@ func (s *windowsSource) Capture() (image.Image, error) {
 		}
 	}
 	if s.dxgi != nil {
-		img, err := s.dxgi.Capture()
+		img, fresh, err := s.dxgi.capture(wait)
 		if err == nil {
-			return img, nil
+			return img, fresh, nil
 		}
 		if errors.Is(err, errNoFrame) {
-			return s.gdi.Capture()
+			img, err := s.gdi.Capture()
+			return img, true, err
 		}
 		// Usually a mode change or the secure desktop: start over soon.
 		s.dxgi.Close()
@@ -88,7 +98,8 @@ func (s *windowsSource) Capture() (image.Image, error) {
 			s.note(fmt.Sprintf("screen capture: GDI (desktop duplication failed: %v)", err))
 		}
 	}
-	return s.gdi.Capture()
+	img, err = s.gdi.Capture()
+	return img, true, err
 }
 
 // note logs a change of capture method once.
@@ -276,11 +287,18 @@ func newDXGI(display int) (d *dxgi, err error) {
 // Capture returns the desktop as of now. When nothing changed since the
 // last call, it waits up to 50 ms and then returns the same image again.
 func (d *dxgi) Capture() (image.Image, error) {
+	img, _, err := d.capture(dxgiWait)
+	return img, err
+}
+
+// capture waits up to wait for the next frame; fresh is false when none
+// came and img is the last picture again.
+func (d *dxgi) capture(wait time.Duration) (img image.Image, fresh bool, err error) {
 	var info [frameInfoSize]byte
 	var res unsafe.Pointer // IDXGIResource
 	// Wait for the next frame, so an uncapped stream runs at the
 	// display's rate instead of copying the same picture again and again.
-	timeout := uintptr(50)
+	timeout := uintptr(wait / time.Millisecond)
 	if !d.have {
 		timeout = 500 // the first frame can take a moment
 	}
@@ -288,13 +306,13 @@ func (d *dxgi) Capture() (image.Image, error) {
 	case 0:
 	case hrWaitTimeout:
 		if d.have {
-			return d.imgs[d.turn], nil
+			return d.imgs[d.turn], false, nil
 		}
-		return nil, errNoFrame
+		return nil, false, errNoFrame
 	case hrAccessLost:
-		return nil, errAccessLost
+		return nil, false, errAccessLost
 	default:
-		return nil, fmt.Errorf("AcquireNextFrame: %#x", hr)
+		return nil, false, fmt.Errorf("AcquireNextFrame: %#x", hr)
 	}
 	defer comCall(d.dup, vDupReleaseFrame)
 	defer release(&res)
@@ -302,18 +320,18 @@ func (d *dxgi) Capture() (image.Image, error) {
 	lastPresent := *(*int64)(unsafe.Pointer(&info[0]))
 	if lastPresent == 0 && d.have {
 		// Only the pointer moved; the picture is the same.
-		return d.imgs[d.turn], nil
+		return d.imgs[d.turn], false, nil
 	}
 	var tex unsafe.Pointer
 	if hr := comCall(res, vQueryInterface, uintptr(unsafe.Pointer(&iidID3D11Texture2)), uintptr(unsafe.Pointer(&tex))); hr != 0 {
-		return nil, fmt.Errorf("frame texture: %#x", hr)
+		return nil, false, fmt.Errorf("frame texture: %#x", hr)
 	}
 	comCall(d.context, vContextCopyResource, uintptr(d.staging), uintptr(tex))
 	release(&tex)
 
 	var mapped [mappedResourceSize]byte
 	if hr := comCall(d.context, vContextMap, uintptr(d.staging), 0, mapRead, 0, uintptr(unsafe.Pointer(&mapped[0]))); hr != 0 {
-		return nil, fmt.Errorf("Map: %#x", hr)
+		return nil, false, fmt.Errorf("Map: %#x", hr)
 	}
 	defer comCall(d.context, vContextUnmap, uintptr(d.staging), 0)
 	data := *(*unsafe.Pointer)(unsafe.Pointer(&mapped[0]))
@@ -321,22 +339,22 @@ func (d *dxgi) Capture() (image.Image, error) {
 
 	w, h := d.bounds.Dx(), d.bounds.Dy()
 	if pitch < w*4 || data == nil {
-		return nil, errors.New("Map: bad row pitch")
+		return nil, false, errors.New("Map: bad row pitch")
 	}
 	d.turn ^= 1
-	img := d.imgs[d.turn]
+	rgba := d.imgs[d.turn]
 	// BGRA -> RGBA, four bytes at a time, on every core.
 	parallelRows(h, func(y0, y1 int) {
 		for y := y0; y < y1; y++ {
 			src := unsafe.Slice((*uint32)(unsafe.Add(data, y*pitch)), w)
-			dst := unsafe.Slice((*uint32)(unsafe.Pointer(&img.Pix[y*img.Stride])), w)
+			dst := unsafe.Slice((*uint32)(unsafe.Pointer(&rgba.Pix[y*rgba.Stride])), w)
 			for i, v := range src {
 				dst[i] = 0xFF000000 | v&0x0000FF00 | (v&0xFF)<<16 | (v>>16)&0xFF
 			}
 		}
 	})
 	d.have = true
-	return img, nil
+	return rgba, true, nil
 }
 
 func (d *dxgi) Close() {

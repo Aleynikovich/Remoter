@@ -20,12 +20,14 @@ type Source interface {
 	Capture() (image.Image, error)
 }
 
-// Screen captures a physical display. It uses a faster platform-specific
-// capturer where there is one and falls back to a generic one.
+// Screen captures a physical display, or every display at once (All). It
+// uses a faster platform-specific capturer where there is one and falls
+// back to a generic one.
 type Screen struct {
 	mu      sync.Mutex
 	display int
 	native  nativeSource
+	all     *allScreens
 	started bool
 	logged  bool
 }
@@ -35,19 +37,19 @@ type nativeSource interface {
 	Close()
 }
 
-// NewScreen captures the display with the given index.
+// NewScreen captures the display with the given index, or All.
 func NewScreen(display int) *Screen {
 	return &Screen{display: display}
 }
 
-// Display returns the index of the display being captured.
+// Display returns the index of the display being captured, or All.
 func (s *Screen) Display() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.display
 }
 
-// SetDisplay switches to another display from the next capture on.
+// SetDisplay switches to another display, or All, from the next capture on.
 func (s *Screen) SetDisplay(display int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -55,25 +57,67 @@ func (s *Screen) SetDisplay(display int) {
 		return
 	}
 	s.display = display
+	s.closeLocked()
+}
+
+func (s *Screen) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeLocked()
+}
+
+func (s *Screen) closeLocked() {
 	if s.native != nil {
 		s.native.Close()
 	}
-	s.native, s.started = nil, false
+	if s.all != nil {
+		s.all.Close()
+	}
+	s.native, s.all, s.started = nil, nil, false
 }
 
 // Capture grabs the whole display.
 func (s *Screen) Capture() (image.Image, error) {
+	img, _, err := s.capture(-1)
+	return img, err
+}
+
+// capture grabs the display. A capturer that can tell waits up to wait for
+// the picture to change (a negative wait means its usual wait) and says
+// whether it did; others always report a fresh picture.
+func (s *Screen) capture(wait time.Duration) (image.Image, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.display == All {
+		if s.all != nil && s.all.stale() {
+			s.closeLocked()
+		}
+		if s.all == nil {
+			ds := Displays()
+			if len(ds) == 0 {
+				return nil, false, errors.New("no displays")
+			}
+			s.all = newAllScreens(ds)
+		}
+		img, err := s.all.Capture()
+		return img, true, err
+	}
 	if !s.started {
 		s.started = true
 		s.native = newNative(s.display)
 	}
 	if s.native != nil {
-		img, err := s.native.Capture()
+		var img image.Image
+		var err error
+		fresh := true
+		if w, ok := s.native.(waitCapturer); ok && wait >= 0 {
+			img, fresh, err = w.CaptureWait(wait)
+		} else {
+			img, err = s.native.Capture()
+		}
 		if err == nil {
 			s.logged = false
-			return img, nil
+			return img, fresh, nil
 		}
 		if !s.logged {
 			s.logged = true
@@ -81,9 +125,10 @@ func (s *Screen) Capture() (image.Image, error) {
 		}
 	}
 	if screenshot.NumActiveDisplays() <= s.display {
-		return nil, errors.New("display not found")
+		return nil, false, errors.New("display not found")
 	}
-	return screenshot.CaptureDisplay(s.display)
+	img, err := screenshot.CaptureDisplay(s.display)
+	return img, true, err
 }
 
 // TestPattern draws a moving pattern. It needs no display, which makes it

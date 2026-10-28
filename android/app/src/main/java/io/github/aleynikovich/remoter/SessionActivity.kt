@@ -86,7 +86,8 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     private var surfaceReady = false
     private var imeVisible = false
     private var displayCount = 1
-    private var display = 0
+    private var display = 0 // displayCount means every monitor at once
+    private var canShowAll = false
     private var lastClipboard: String? = null
 
     private val frames = AtomicInteger()
@@ -211,7 +212,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         saverButton = button("Data saver: off") { setSaver(!saver) }
         modeButton = button("") { toggleMode() }
         captureButton = button("Lock mouse") { screen.capture(!screen.isCaptured) }
-        displayButton = button("Screen 1") { pickDisplay() }.apply { visibility = View.GONE }
+        displayButton = button("Monitor 1") { pickDisplay() }.apply { visibility = View.GONE }
         stats = TextView(this).apply {
             setTextColor(0xFF9AA3B2.toInt())
             textSize = 12f
@@ -219,12 +220,12 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         }
         toolbar = bar(
             keyboardButton,
+            displayButton,
             button("Keys") { setKeysBar(keysBar.visibility != View.VISIBLE) },
             modeButton,
             button("Fit") { screen.fit() },
             button("1:1") { screen.actualSize() },
             captureButton,
-            displayButton,
             qualityButton,
             saverButton,
             button("Send clipboard") { sendClipboard(force = true) },
@@ -516,9 +517,12 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     }
 
     private fun pickDisplay() {
-        val names = Array(displayCount) { "Screen ${it + 1}" + if (it == display) " (showing)" else "" }
+        val choices = displayCount + if (canShowAll) 1 else 0
+        val names = Array(choices) {
+            (if (it < displayCount) "Monitor ${it + 1}" else "All monitors") + if (it == display) " (showing)" else ""
+        }
         AlertDialog.Builder(this)
-            .setTitle("Show which screen?")
+            .setTitle("Show which monitor?")
             .setItems(names) { _, which ->
                 client?.send(JSONObject().put("type", "select_display").put("display", which))
             }
@@ -644,7 +648,8 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
             "displays" -> {
                 displayCount = msg.optInt("count", 1).coerceAtLeast(1)
                 display = msg.optInt("display", 0)
-                displayButton.text = "Screen ${display + 1}/$displayCount"
+                canShowAll = msg.optBoolean("all", false)
+                displayButton.text = if (display >= displayCount) "All monitors" else "Monitor ${display + 1}/$displayCount"
                 displayButton.visibility = if (displayCount > 1) View.VISIBLE else View.GONE
             }
             "clipboard" -> {

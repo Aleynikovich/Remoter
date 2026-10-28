@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -43,6 +44,7 @@ type Conn struct {
 	copier   Global // zwlr_screencopy_manager_v1
 	pointers Global // zwlr_virtual_pointer_manager_v1
 	keyboard Global // zwp_virtual_keyboard_manager_v1
+	xdgOut   Global // zxdg_output_manager_v1
 }
 
 // Global is an interface the compositor offers.
@@ -62,6 +64,10 @@ type Output struct {
 	W, H    int    // current mode in pixels
 	pending struct{ x, y, w, h int }
 	ready   bool
+	// Most compositors send 0, 0 as every output's position in
+	// wl_output, so the layout position comes from xdg-output.
+	logical bool
+	lx, ly  int
 }
 
 // SocketPath finds the compositor's socket: $WAYLAND_DISPLAY, or, for a
@@ -118,10 +124,13 @@ func Connect() (*Conn, error) {
 		c.Close()
 		return nil, err
 	}
-	// A second round trip collects the outputs' geometry and modes.
-	if err := c.Roundtrip(); err != nil {
-		c.Close()
-		return nil, err
+	// Two more round trips collect the outputs' geometry, modes and
+	// layout positions.
+	for range 2 {
+		if err := c.Roundtrip(); err != nil {
+			c.Close()
+			return nil, err
+		}
 	}
 	return c, nil
 }
@@ -359,6 +368,18 @@ func (c *Conn) registryEvent(op uint16, r *reader) {
 			c.mu.Lock()
 			c.outputs = append(c.outputs, o)
 			c.mu.Unlock()
+			if c.xdgOut.id != 0 {
+				c.watchXDGOutput(o)
+			}
+		case "zxdg_output_manager_v1":
+			c.bind(&g, 3, nil)
+			c.xdgOut = g
+			c.mu.Lock()
+			outs := slices.Clone(c.outputs)
+			c.mu.Unlock()
+			for _, o := range outs {
+				c.watchXDGOutput(o)
+			}
 		case "zwlr_screencopy_manager_v1":
 			c.bind(&g, 3, nil)
 			c.copier = g
@@ -394,6 +415,23 @@ func (c *Conn) bind(g *Global, max uint32, h func(uint16, *reader)) uint32 {
 	return g.id
 }
 
+// watchXDGOutput asks for the output's position in the layout.
+func (c *Conn) watchXDGOutput(o *Output) {
+	id := c.newID(func(op uint16, r *reader) {
+		if op != 0 { // logical_position: x, y
+			return
+		}
+		x, y := int(r.int()), int(r.int())
+		c.mu.Lock()
+		o.logical, o.lx, o.ly = true, x, y
+		if o.ready {
+			o.X, o.Y = x, y
+		}
+		c.mu.Unlock()
+	})
+	c.send(c.xdgOut.id, 1, id, o.id) // get_xdg_output
+}
+
 func (c *Conn) outputEvent(o *Output, op uint16, r *reader) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -407,6 +445,9 @@ func (c *Conn) outputEvent(o *Output, op uint16, r *reader) {
 		}
 	case 2: // done
 		o.X, o.Y, o.W, o.H = o.pending.x, o.pending.y, o.pending.w, o.pending.h
+		if o.logical {
+			o.X, o.Y = o.lx, o.ly
+		}
 		o.ready = true
 	case 4: // name
 		o.Name = r.string()

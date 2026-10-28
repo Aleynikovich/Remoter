@@ -215,29 +215,44 @@ func runHost(ctx context.Context, a *host.Agent) {
 	}
 }
 
-// monitors switches both screen capture and input to another display.
+// monitors switches both screen capture and input to another display. The
+// index one past the last display shows all of them at once.
 type monitors struct {
 	screen *capture.Screen
 	input  input.Handler
 }
 
-func (m monitors) Count() int   { return len(capture.Displays()) }
-func (m monitors) Current() int { return m.screen.Display() }
+func (m monitors) Count() int { return len(capture.Displays()) }
+
+func (m monitors) Current() int {
+	if d := m.screen.Display(); d != capture.All {
+		return d
+	}
+	return m.Count()
+}
 
 func (m monitors) Select(display int) error {
-	if display < 0 || display >= len(capture.Displays()) {
+	n := len(capture.Displays())
+	if display < 0 || display > n || display == n && n < 2 {
 		return errors.New("no such display")
+	}
+	if display == n {
+		display = capture.All
 	}
 	m.input.SetDisplay(displayBounds(display))
 	m.screen.SetDisplay(display)
 	return nil
 }
 
-// displayBounds is the area of the display in input coordinates, or an empty
-// rectangle when it is not there (yet: a service can start before the
-// desktop).
+// displayBounds is the area of the display (or of every display, for
+// capture.All) in input coordinates, or an empty rectangle when it is not
+// there (yet: a service can start before the desktop).
 func displayBounds(display int) image.Rectangle {
-	if ds := capture.Displays(); display < len(ds) {
+	ds := capture.Displays()
+	if display == capture.All {
+		return capture.Union(ds)
+	}
+	if display < len(ds) {
 		return ds[display]
 	}
 	return image.Rectangle{}

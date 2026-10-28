@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ type toolbar struct {
 	sticky   bool // opened with the hotkey: stays until closed
 	keys     bool // the Send keys row is showing
 	picture  bool // the picture settings row is showing
+	monitors bool // the monitor row is showing
 	ask      bool // the metered connection question is showing
 	hover    int  // item under the pointer, or -1
 	tabSince time.Time
@@ -86,6 +88,20 @@ func (a *app) toolbarItems() []tbItem {
 		}
 		return items
 	}
+	if t.monitors {
+		items := []tbItem{{"monitors", "‹ Back"}}
+		for d := range a.monitorChoices() {
+			label := a.monitorLabel(d)
+			if d < a.displays {
+				label = fmt.Sprintf("Monitor %d", d+1)
+			}
+			if d == a.display {
+				label = "• " + label
+			}
+			items = append(items, tbItem{fmt.Sprintf("mon:%d", d), label})
+		}
+		return items
+	}
 	if t.keys {
 		items := []tbItem{{"keys", "‹ Back"}}
 		for i, k := range sendKeys {
@@ -104,7 +120,11 @@ func (a *app) toolbarItems() []tbItem {
 	}
 	items := []tbItem{{"picture", picture + "…"}, {"saver", saver + " (" + dataText(a.sessionBytes) + " used)"}}
 	if a.displays > 1 {
-		items = append(items, tbItem{"monitor", fmt.Sprintf("Monitor %d/%d", a.display+1, a.displays)})
+		label := fmt.Sprintf("Monitor %d/%d", a.display+1, a.displays)
+		if a.display >= a.displays {
+			label = "All monitors"
+		}
+		items = append(items, tbItem{"monitors", label + "…"})
 	}
 	full := "Full screen"
 	if a.fullscreen() {
@@ -133,12 +153,12 @@ func (a *app) tabRect() image.Rectangle {
 }
 
 func (a *app) openToolbar(sticky bool) {
-	a.bar.open, a.bar.sticky, a.bar.keys, a.bar.picture, a.bar.ask, a.bar.hover = true, sticky, false, false, false, -1
+	a.bar.open, a.bar.sticky, a.bar.keys, a.bar.picture, a.bar.monitors, a.bar.ask, a.bar.hover = true, sticky, false, false, false, false, -1
 	a.dirty = true
 }
 
 func (a *app) closeToolbar() {
-	a.bar.open, a.bar.keys, a.bar.picture, a.bar.ask, a.bar.tabSince = false, false, false, false, time.Time{}
+	a.bar.open, a.bar.keys, a.bar.picture, a.bar.monitors, a.bar.ask, a.bar.tabSince = false, false, false, false, false, time.Time{}
 	a.dirty = true
 }
 
@@ -227,8 +247,8 @@ func (a *app) toolbarAction(id string) {
 		a.setSaver(true)
 	case "saver:no":
 		a.closeToolbar()
-	case "monitor":
-		a.shortcut(scPageDown)
+	case "monitors":
+		t.monitors = !t.monitors
 	case "fullscreen":
 		a.closeToolbar()
 		a.shortcut(scEnter)
@@ -256,6 +276,13 @@ func (a *app) toolbarAction(id string) {
 	case "close":
 		a.closeToolbar()
 	default:
+		if d, ok := strings.CutPrefix(id, "mon:"); ok {
+			a.closeToolbar()
+			if n, err := strconv.Atoi(d); err == nil {
+				a.selectDisplay(n)
+			}
+			break
+		}
 		if q, ok := strings.CutPrefix(id, "q:"); ok {
 			a.closeToolbar()
 			a.setQuality(q)
