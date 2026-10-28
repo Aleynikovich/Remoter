@@ -47,6 +47,7 @@ const (
 	scD        = 7
 	scQ        = 20
 	scM        = 16
+	scI        = 12
 )
 
 // qualities are the picture settings Ctrl+Alt+Q steps through: auto, or a
@@ -590,7 +591,7 @@ func (a *app) drainClient() {
 			a.capture(true)
 			a.syncClipboard()
 			a.setTitle("Remoter · " + a.server)
-			a.showNotice("Keyboard and mouse go to the remote computer  ·  Ctrl+Alt+Esc releases them", 5*time.Second)
+			a.showNotice("Keyboard and mouse go to the remote computer  ·  Ctrl+Alt+D releases them", 5*time.Second)
 		case viewer.EventFrame:
 			a.bytes += len(ev.Data)
 			if len(ev.Data) > 0 && ev.Data[0] == 'V' {
@@ -845,7 +846,7 @@ func (a *app) sessionKey(ev *sdlEvent, down bool) {
 // shortcut runs a viewer shortcut and reports whether sc is one.
 func (a *app) shortcut(sc int32) bool {
 	switch sc {
-	case scEscape:
+	case scD:
 		// Ctrl and Alt are down on the remote now; let go of them there.
 		a.releaseHeld()
 		if a.captured {
@@ -853,7 +854,7 @@ func (a *app) shortcut(sc int32) bool {
 			a.showNotice("Released  ·  click the screen to give the remote computer keyboard and mouse again", 6*time.Second)
 		} else {
 			a.capture(true)
-			a.showNotice("Keyboard and mouse go to the remote computer  ·  Ctrl+Alt+Esc releases them", 3*time.Second)
+			a.showNotice("Keyboard and mouse go to the remote computer  ·  Ctrl+Alt+D releases them", 3*time.Second)
 		}
 	case scEnter:
 		a.releaseHeld()
@@ -862,7 +863,7 @@ func (a *app) shortcut(sc int32) bool {
 		} else {
 			sdl.SetWindowFullscreen(a.win, sdlWindowFullscreenDesktop)
 		}
-	case scD:
+	case scI:
 		if a.connected && a.diagAsked.IsZero() {
 			a.diagAsked, a.diagHost, a.linkResult = time.Now(), nil, ""
 			a.linkTest = make(chan string, 1)
@@ -915,7 +916,7 @@ func (a *app) mouseButton(sdlButton int, down bool) {
 	}
 	if down && !a.captured {
 		a.capture(true)
-		a.showNotice("Keyboard and mouse go to the remote computer  ·  Ctrl+Alt+Esc releases them", 3*time.Second)
+		a.showNotice("Keyboard and mouse go to the remote computer  ·  Ctrl+Alt+D releases them", 3*time.Second)
 	}
 	// SDL numbers buttons 1 left, 2 middle, 3 right; the host uses the
 	// browser's 0, 1, 2.

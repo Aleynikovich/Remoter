@@ -207,7 +207,7 @@ func (a *app) toolbarAction(id string) {
 	case "capture":
 		a.closeToolbar()
 		if a.captured {
-			a.shortcut(scEscape)
+			a.shortcut(scD)
 		} else {
 			a.capture(true)
 		}
@@ -219,7 +219,7 @@ func (a *app) toolbarAction(id string) {
 		a.runLinkTest()
 	case "diag":
 		a.closeToolbar()
-		a.shortcut(scD)
+		a.shortcut(scI)
 	case "devices":
 		a.closeToolbar()
 		a.disconnect("")

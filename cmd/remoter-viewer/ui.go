@@ -380,9 +380,9 @@ func (l *deviceList) draw(out image.Point, s float64) *image.RGBA {
 		}
 		drawText(img, small, x0, out.Y-px(44), l.status, c)
 	}
-	hint := "↑ ↓: choose  ·  Enter or click: connect  ·  F5: refresh  ·  In a session, Ctrl+Alt+Esc releases keyboard and mouse"
+	hint := "↑ ↓: choose  ·  Enter or click: connect  ·  F5: refresh  ·  In a session, Ctrl+Alt+D releases keyboard and mouse"
 	if textWidth(small, hint) > out.X-px(24) {
-		hint = "Enter: connect  ·  Ctrl+Alt+Esc releases a session"
+		hint = "Enter: connect  ·  Ctrl+Alt+D releases a session"
 	}
 	drawText(img, small, (out.X-textWidth(small, hint))/2, out.Y-px(18), hint, colMuted)
 	return img

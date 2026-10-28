@@ -165,10 +165,10 @@ away.
   Sway, GNOME and KDE support; on Windows a low-level keyboard hook takes
   the Windows key, Alt+Tab and the like (only Ctrl+Alt+Del stays local).
   The pointer is kept inside the window.
-  **Ctrl+Alt+Esc** gives keyboard and mouse back; click the picture to hand
+  **Ctrl+Alt+D** gives keyboard and mouse back; click the picture to hand
   them over again. In Hyprland, binds marked `bindp` still stay local.
 * **Ctrl+Alt+Enter** toggles full screen, **Ctrl+Alt+PageDown/PageUp**
-  switches between the remote computer's monitors, and **Ctrl+Alt+D** copies
+  switches between the remote computer's monitors, and **Ctrl+Alt+I** copies
   a diagnostics report (a ping and download test, the viewer's frame,
   decode and draw times for the last minute, then the host's settings and
   log) to the clipboard.
