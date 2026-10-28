@@ -31,7 +31,10 @@ const (
 	sdlBlendBlend          = 1
 	sdlScaleNearest        = 0
 	sdlScaleLinear         = 1
+	sdlYUVJPEG             = 0
 	sdlYUVBT601            = 1
+	sdlYUVBT709            = 2
+	sdlYUVAutomatic        = 3
 
 	sdlQuit            = 0x100
 	sdlWindowEvent     = 0x200

@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
+	"github.com/aleynikovich/remoter/internal/h264"
 	"github.com/aleynikovich/remoter/internal/protocol"
 	"github.com/aleynikovich/remoter/internal/stream"
 	"github.com/aleynikovich/remoter/internal/viewer"
@@ -120,6 +121,8 @@ type app struct {
 	history       []statSecond // the last minute, for diagnostics
 	diagAsked     time.Time    // when a diagnostics report was asked for; zero if not
 	bar           toolbar
+	yuvMode       int32       // SDL's YUV conversion, from the stream's SPS
+	colorInfo     string      // what the SPS says, for diagnostics
 	dropped       []string    // files dropped on the window, until the drop ends
 	jobs          chan func() // work for the window's thread, see later
 	diagHost      *string     // the host's report, waiting for the link test
@@ -195,6 +198,7 @@ func newApp(cfg viewer.Config, cfgPath string, fullscreen bool, newDec func() (v
 		jobs:    make(chan func(), 64),
 		scale:   1,
 		dirty:   true,
+		yuvMode: sdlYUVBT601,
 	}
 	sdl.StartTextInput()
 	a.scan()
@@ -645,6 +649,9 @@ func (a *app) videoFrame(data []byte) bool {
 		return false
 	}
 	a.needKey = false
+	if v.Key {
+		a.followColor(v.Frame)
+	}
 	start := time.Now()
 	got, err := a.dec.decode(v.Frame)
 	a.times.addDecode(time.Since(start))
@@ -1129,4 +1136,42 @@ func (a *app) setQuality(q string) {
 	}
 	a.client.Send(protocol.Message{Type: protocol.TypeQuality, Text: q})
 	a.showNotice("Picture: "+qualityLabel(q)+"  ·  Ctrl+Alt+Q changes it", 3*time.Second)
+}
+
+// followColor converts the picture the way the stream's SPS says it was
+// encoded: OpenH264 hosts send BT.601, GPU encoders BT.709. A stream that
+// does not say gets what browsers do, BT.601 for SD and BT.709 for HD.
+func (a *app) followColor(frame []byte) {
+	c, ok := h264.StreamColor(frame)
+	if !ok {
+		return
+	}
+	mode, info := int32(sdlYUVAutomatic), "unspecified (BT.601 for SD, BT.709 for HD)"
+	if c.Described {
+		switch c.Matrix {
+		case 1:
+			mode, info = sdlYUVBT709, "BT.709"
+		case 5, 6:
+			mode, info = sdlYUVBT601, "BT.601"
+			if c.FullRange {
+				mode, info = sdlYUVJPEG, "BT.601 full range"
+			}
+		default:
+			info = fmt.Sprintf("matrix %d (shown as automatic)", c.Matrix)
+		}
+	}
+	if c.FullRange && mode != sdlYUVJPEG {
+		info += ", full range (shown as limited)"
+	}
+	a.colorInfo = info
+	if mode == a.yuvMode {
+		return
+	}
+	a.yuvMode = mode
+	sdl.SetYUVConversionMode(mode)
+	// Renderers pick the conversion when a texture is made.
+	if a.videoTex != 0 {
+		sdl.DestroyTexture(a.videoTex)
+		a.videoTex, a.videoSize = 0, image.Point{}
+	}
 }

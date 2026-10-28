@@ -69,6 +69,9 @@ func (a *app) diagnosticsReport(host string) string {
 	if a.noVideo != "" {
 		fmt.Fprintf(&b, "host says no video: %s\n", a.noVideo)
 	}
+	if a.colorInfo != "" {
+		fmt.Fprintf(&b, "video colours: %s\n", a.colorInfo)
+	}
 	if a.quality != "" {
 		fmt.Fprintf(&b, "picture: %s at %d%% (asked for %q)\n", a.quality, a.qualityScale, a.cfg.Quality)
 	}
