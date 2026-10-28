@@ -13,7 +13,7 @@ func TestSlowViewerDoesNotFreezeOthers(t *testing.T) {
 		if !f.ready() {
 			t.Fatalf("not ready before update %d", seq)
 		}
-		f.sent(seq)
+		f.sent(seq, 1000)
 		f.ack("fast", seq)
 	}
 	if f.ready() {
@@ -39,7 +39,7 @@ func TestLaggingViewerStaysIgnoredUntilCaughtUp(t *testing.T) {
 	seq := uint32(0)
 	send := func() {
 		seq++
-		f.sent(seq)
+		f.sent(seq, 1000)
 		f.ack("fast", seq)
 	}
 	for range window {
@@ -79,7 +79,7 @@ func TestBurstyAckerIsNotWaitedFor(t *testing.T) {
 	for now.Sub(start) < 3*time.Second {
 		if f.ready() {
 			seq++
-			f.sent(seq)
+			f.sent(seq, 1000)
 			f.ack("fast", seq)
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -90,5 +90,38 @@ func TestBurstyAckerIsNotWaitedFor(t *testing.T) {
 	}
 	if fps := float64(seq) / now.Sub(start).Seconds(); fps < 100 {
 		t.Fatalf("%.0f updates a second; the bursty viewer is still setting the pace", fps)
+	}
+}
+
+// On a phone network a round trip can take a second. While the link has
+// bandwidth to spare, the host must not send only a window per round trip.
+func TestLongLinkKeepsTheFrameRate(t *testing.T) {
+	f := flow{viewers: make(map[string]*viewerState), wake: make(chan struct{}, 1)}
+	f.join("far", true)
+	const rtt = 500 * time.Millisecond
+	start := time.Now()
+	seq := uint32(0)
+	type pending struct {
+		seq uint32
+		due time.Time
+	}
+	var acks []pending
+	for time.Since(start) < 3*time.Second {
+		now := time.Now()
+		for len(acks) > 0 && !acks[0].due.After(now) {
+			f.ack("far", acks[0].seq)
+			acks = acks[1:]
+		}
+		if f.ready() {
+			seq++
+			f.sent(seq, 2000) // 30 fps of these is 0.5 Mbit/s
+			acks = append(acks, pending{seq, now.Add(rtt)})
+		}
+		time.Sleep(33 * time.Millisecond)
+	}
+	// After the first round trips the window opens up to the full 30 fps.
+	t.Logf("%.0f updates a second", float64(seq)/3)
+	if fps := float64(seq) / 3; fps < 20 {
+		t.Fatalf("%.0f updates a second over a %s link", fps, rtt)
 	}
 }

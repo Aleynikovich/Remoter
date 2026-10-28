@@ -96,6 +96,7 @@ const (
 
 	// IMFAttributes, which media types, samples and events extend.
 	vGetUINT32           = 7
+	vGetGUID             = 10
 	vGetBlobSize         = 14
 	vGetBlob             = 15
 	vGetAllocatedString  = 13
@@ -116,6 +117,7 @@ const (
 
 	vGetOutputStreamInfo    = 7 // IMFTransform
 	vGetAttributes          = 8
+	vGetInputAvailableType  = 13
 	vGetOutputAvailableType = 14
 	vSetInputType           = 15
 	vSetOutputType          = 16
@@ -236,25 +238,42 @@ func (e *Encoder) Name() string { return e.name }
 // Size returns the encoded picture size.
 func (e *Encoder) Size() (w, h int) { return e.w, e.h }
 
+// init opens the first of the H.264 encoders that takes our settings.
 func (e *Encoder) init() error {
-	in := [2]guid{*mediaTypeVideo, *formatNV12}
+	// Only the output is filtered on: some hardware encoders list their
+	// input formats in ways the filter misses.
 	out := [2]guid{*mediaTypeVideo, *formatH264}
 	var list unsafe.Pointer
 	var count uint32
-	if hr, _, _ := procMFTEnumEx.Call(g(categoryVideoEncoder), e.flags, uintptr(unsafe.Pointer(&in)), uintptr(unsafe.Pointer(&out)),
+	if hr, _, _ := procMFTEnumEx.Call(g(categoryVideoEncoder), e.flags, 0, uintptr(unsafe.Pointer(&out)),
 		uintptr(unsafe.Pointer(&list)), uintptr(unsafe.Pointer(&count))); failed(uint32(hr)) {
 		return fmt.Errorf("MFTEnumEx: %#x", hr)
 	}
 	if count == 0 {
 		return errors.New("no H.264 encoder found")
 	}
-	acts := unsafe.Slice((*unsafe.Pointer)(list), count)
-	e.activate = acts[0]
-	for _, a := range acts[1:] {
-		comCall(a, vRelease)
+	var errs []error
+	for _, a := range unsafe.Slice((*unsafe.Pointer)(list), count) {
+		if e.mft != nil {
+			comCall(a, vRelease)
+			continue
+		}
+		e.activate = a
+		if err := e.setup(); err != nil {
+			errs = append(errs, err)
+			e.Close()
+		}
 	}
 	procCoTaskFree.Call(uintptr(list))
+	if e.mft == nil {
+		return errors.Join(errs...)
+	}
+	return nil
+}
 
+// setup activates e.activate and sets it up for our pictures.
+func (e *Encoder) setup() error {
+	*e = Encoder{w: e.w, h: e.h, kbps: e.kbps, flags: e.flags, start: e.start, activate: e.activate}
 	var name *uint16
 	var n uint32
 	if !failed(comCall(e.activate, vGetAllocatedString, g(friendlyName), uintptr(unsafe.Pointer(&name)), uintptr(unsafe.Pointer(&n)))) {
@@ -299,7 +318,9 @@ func (e *Encoder) init() error {
 		return fmt.Errorf("%s: output type: %w", e.name, err)
 	}
 	if err := e.setType(vSetInputType, formatNV12, 0); err != nil {
-		return fmt.Errorf("%s: input type: %w", e.name, err)
+		if err2 := e.setOfferedInput(); err2 != nil {
+			return fmt.Errorf("%s: input type: %v, then %w", e.name, err, err2)
+		}
 	}
 
 	var info [3]uint32 // MFT_OUTPUT_STREAM_INFO
@@ -339,6 +360,32 @@ func (e *Encoder) setType(slot int, format *guid, profile uint32) error {
 		return fmt.Errorf("%#x", hr)
 	}
 	return nil
+}
+
+// setOfferedInput picks the encoder's own NV12 input type, for encoders
+// that refuse one built from scratch.
+func (e *Encoder) setOfferedInput() error {
+	for i := uintptr(0); i < 64; i++ {
+		var mt unsafe.Pointer
+		if failed(comCall(e.mft, vGetInputAvailableType, 0, i, uintptr(unsafe.Pointer(&mt)))) {
+			break
+		}
+		var sub guid
+		comCall(mt, vGetGUID, g(mtSubtype), uintptr(unsafe.Pointer(&sub)))
+		if sub != *formatNV12 {
+			release(&mt)
+			continue
+		}
+		comCall(mt, vSetUINT64, g(mtFrameSize), uintptr(uint64(e.w)<<32|uint64(e.h)))
+		comCall(mt, vSetUINT64, g(mtFrameRate), uintptr(uint64(60)<<32|1))
+		hr := comCall(e.mft, vSetInputType, 0, uintptr(mt), 0)
+		release(&mt)
+		if failed(hr) {
+			return fmt.Errorf("its own NV12 type: %#x", hr)
+		}
+		return nil
+	}
+	return errors.New("it offers no NV12 input")
 }
 
 // setValue sets an ICodecAPI property, where the encoder has one.
