@@ -49,6 +49,9 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     private lateinit var captureButton: TextView
     private lateinit var displayButton: TextView
     private lateinit var keyboardButton: TextView
+    private lateinit var qualityButton: TextView
+    /** The host's picture scale in percent, from its quality messages. */
+    @Volatile private var scalePercent = 100
     private val modifierViews = mutableMapOf<String, TextView>()
 
     private var client: RelayClient? = null
@@ -185,6 +188,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         screen.setBackgroundColor(Color.BLACK)
 
         keyboardButton = button("⌨ Keyboard") { toggleKeyboard() }
+        qualityButton = button("Quality: Auto") { pickQuality() }
         modeButton = button("") { toggleMode() }
         captureButton = button("Lock mouse") { screen.capture(!screen.isCaptured) }
         displayButton = button("Screen 1") { pickDisplay() }.apply { visibility = View.GONE }
@@ -201,7 +205,9 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
             button("1:1") { screen.actualSize() },
             captureButton,
             displayButton,
+            qualityButton,
             button("Send clipboard") { sendClipboard(force = true) },
+            button("Test link") { testLink() },
             stats,
             button("Hide") { setToolbar(false) },
             button("Disconnect") { finish() },
@@ -350,6 +356,86 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         if (ms > 0) main.postDelayed(hideNotice, ms)
     }
 
+    /**
+     * Quality applies to the host, so to every viewer. Auto lowers the picture
+     * scale when encoding cannot keep up and raises it again when it can.
+     */
+    private fun pickQuality() {
+        val modes = arrayOf("auto", "sharp", "balanced", "smooth")
+        val labels = arrayOf(
+            "Auto (scale down when the computer can't keep up)",
+            "Sharp (full resolution)",
+            "Balanced",
+            "Smooth (lower resolution, more fps)",
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Picture quality")
+            .setItems(labels) { _, which ->
+                client?.send(JSONObject().put("type", "quality").put("text", modes[which]))
+            }
+            .show()
+    }
+
+    /** Times five pings and a 16 MiB download from the computer. */
+    private fun testLink() {
+        val base = try {
+            RelayClient.baseUrl(computer)
+        } catch (e: IllegalArgumentException) {
+            return
+        }
+        showNotice("Testing the link…", 0)
+        Thread {
+            val report = try {
+                val pings = (1..5).map {
+                    val t = System.nanoTime()
+                    fetch("$base/ping")
+                    (System.nanoTime() - t) / 1_000_000
+                }
+                val t = System.nanoTime()
+                val n = fetch("$base/speedtest?mb=16")
+                val secs = (System.nanoTime() - t) / 1e9
+                "link test: ping %d-%d ms, download %.1f Mbit/s".format(pings.min(), pings.max(), n * 8 / secs / 1e6)
+            } catch (e: Exception) {
+                "link test failed: ${e.message}"
+            }
+            main.post {
+                if (isDestroyed) return@post
+                notice.visibility = View.GONE
+                AlertDialog.Builder(this)
+                    .setTitle("Link to $computer")
+                    .setMessage(report)
+                    .setPositiveButton("Copy") { _, _ ->
+                        lastClipboard = report
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Remoter link test", report))
+                    }
+                    .setNegativeButton("Close", null)
+                    .show()
+            }
+        }.start()
+    }
+
+    /** GETs a URL and returns how many bytes came back. */
+    private fun fetch(url: String): Long {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 5000
+        conn.readTimeout = 30000
+        try {
+            if (conn.responseCode != 200) throw java.io.IOException("$url: HTTP ${conn.responseCode}")
+            val buf = ByteArray(256 * 1024)
+            var total = 0L
+            conn.inputStream.use { input ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    total += n
+                }
+            }
+            return total
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun pickDisplay() {
         val names = Array(displayCount) { "Screen ${it + 1}" + if (it == display) " (showing)" else "" }
         AlertDialog.Builder(this)
@@ -365,7 +451,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
             val f = frames.getAndSet(0)
             val b = bytes.getAndSet(0)
             stats.text = if (client?.connected == true) {
-                "%s · %d fps · %.1f Mbit/s".format(if (videoMode == true) "H.264" else "JPEG", f, b * 8 / 1e6)
+                "%s · %d%% · %d fps · %.1f Mbit/s".format(if (videoMode == true) "H.264" else "JPEG", scalePercent, f, b * 8 / 1e6)
             } else {
                 ""
             }
@@ -461,6 +547,11 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     override fun onMessage(msg: JSONObject) {
         when (msg.optString("type")) {
             "cursor" -> screen.setCursorShape(msg.optString("cursor", "default"))
+            "quality" -> {
+                val mode = msg.optString("text", "auto")
+                scalePercent = msg.optInt("scale", 100)
+                qualityButton.text = "Quality: ${mode.replaceFirstChar { it.uppercase() }}"
+            }
             "displays" -> {
                 displayCount = msg.optInt("count", 1).coerceAtLeast(1)
                 display = msg.optInt("display", 0)

@@ -113,15 +113,23 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
 
     fun setContentSize(w: Int, h: Int) {
         if (w == contentW && h == contentH) return
-        val first = contentW == 0
+        val oldW = contentW
+        val oldH = contentH
         contentW = w
         contentH = h
-        zoom = 1f
         updateCursorShown()
-        if (first) {
+        if (oldW == 0) {
+            zoom = 1f
             curX = w / 2f
             curY = h / 2f
+        } else if (abs(w.toFloat() / h - oldW.toFloat() / oldH) < 0.02f) {
+            // The host scaled the stream (quality "auto" and friends): same
+            // screen, fewer pixels. Keep the zoom and the view where they are.
+            curX = curX * w / oldW
+            curY = curY * h / oldH
         } else {
+            // Another monitor or resolution: start from the whole screen.
+            zoom = 1f
             curX = curX.coerceIn(0f, w - 1f)
             curY = curY.coerceIn(0f, h - 1f)
         }
