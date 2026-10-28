@@ -1,3 +1,4 @@
 /remoter
 *.exe
 dist/
+/remoter-viewer
