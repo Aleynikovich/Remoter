@@ -32,7 +32,13 @@ const (
 	// window is how many updates may be on their way to a viewer before the
 	// host waits for that viewer's ack. Waiting instead of queueing keeps the
 	// picture current rather than seconds behind on a slow link.
-	window = 3
+	window = 5
+	// recheck is how often the stream loop wakes while it waits for
+	// viewers, so a still screen gets refined and stale viewers noticed.
+	recheck = 50 * time.Millisecond
+	// minInterval keeps a source that returns at once from spinning a core
+	// when there is no FPS cap; it is well above any display's rate.
+	minInterval = 2 * time.Millisecond
 	// staleAfter is how long a viewer may go without acking before the host
 	// stops waiting for it. The relay drops it once its queue overflows.
 	staleAfter = 5 * time.Second
@@ -88,7 +94,7 @@ type Agent struct {
 	Password  string
 	Source    capture.Source
 	Input     InputHandler
-	FPS       int // upper bound; the actual rate adapts to the viewers
+	FPS       int // upper bound, or 0 for none; the rate adapts to the encoder and viewers
 	Quality   int // JPEG quality for changing areas, 1..100
 	// RefineQuality is the JPEG quality areas are resent at once they stop
 	// changing. Zero means 90.
@@ -323,9 +329,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.Password == "" {
 		return errors.New("password must not be empty")
 	}
-	if a.FPS <= 0 {
-		a.FPS = 10
-	}
 	if a.Quality <= 0 {
 		a.Quality = 60
 	}
@@ -453,8 +456,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-// stream captures the screen and sends what changed, at most FPS times a
-// second and only as fast as the slowest viewer draws. Encoding and sending
+// stream captures the screen and sends what changed, as fast as the encoder
+// and the viewers keep up (and at most FPS times a second if that is set). Encoding and sending
 // run in their own goroutine, so the next capture overlaps them.
 func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -467,7 +470,10 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 		<-done
 	}()
 
-	interval := time.Second / time.Duration(a.FPS)
+	interval := minInterval
+	if a.FPS > 0 {
+		interval = max(interval, time.Second/time.Duration(a.FPS))
+	}
 	var cursor string
 	next := time.Now()
 	for {
@@ -475,9 +481,7 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 		wait := time.Until(next)
 		for wait > 0 || !a.flow.ready() {
 			if wait <= 0 {
-				// Waiting on viewers; still wake now and then so a still
-				// screen gets refined and stale viewers are noticed.
-				wait = interval
+				wait = recheck
 			}
 			select {
 			case <-ctx.Done():
@@ -537,8 +541,7 @@ type frame struct {
 
 // encodeAndSend encodes the captures it is handed and sends them.
 func (a *Agent) encodeAndSend(ctx context.Context, conn *websocket.Conn, frames <-chan frame) error {
-	st := &streamer{a: a, tiles: &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter},
-		interval: time.Second / time.Duration(a.FPS)}
+	st := &streamer{a: a, tiles: &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter}}
 	defer st.closeVideo()
 	tm := timings{start: time.Now()}
 	for f := range frames {
@@ -618,9 +621,8 @@ type streamer struct {
 
 	video      VideoEncoder
 	usingVideo bool
-	interval   time.Duration // between frames at the FPS cap
-	scaled     *image.RGBA   // the capture shrunk to the quality's scale
-	prev       []byte        // last capture, to skip encoding a still screen
+	scaled     *image.RGBA // the capture shrunk to the quality's scale
+	prev       []byte      // last capture, to skip encoding a still screen
 	changed    time.Time
 }
 
@@ -678,7 +680,7 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 	}
 
 	data, key, err := s.video.Encode(img, full)
-	s.a.res.encoded(time.Since(start), s.interval, time.Now())
+	s.a.res.encoded(time.Since(start), time.Now())
 	if err != nil {
 		log.Printf("H.264 failed, sending JPEG: %v", err)
 		s.a.turnOffVideo(err)

@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -79,15 +80,20 @@ type Encoder struct {
 	fns  *[10]uintptr
 	w, h int
 
-	yuv  []byte
-	src  []byte
-	info []byte
-	ts   int64
+	yuv   []byte
+	src   []byte
+	info  []byte
+	ts    int64 // of the last frame, in ms since start
+	start time.Time
 }
 
 // NewEncoder starts an encoder for w×h images (rounded down to even sizes)
-// at the given target bit rate in kbit/s and frame rate.
+// at the given target bit rate in kbit/s and expected frame rate (0 means
+// 60). Frames carry their real times, so the bit rate holds at any rate.
 func NewEncoder(w, h, kbps, fps int) (*Encoder, error) {
+	if fps <= 0 {
+		fps = 60
+	}
 	if err := Load(); err != nil {
 		return nil, err
 	}
@@ -95,7 +101,7 @@ func NewEncoder(w, h, kbps, fps int) (*Encoder, error) {
 	if w < 16 || h < 16 {
 		return nil, errors.New("h264: picture too small")
 	}
-	e := &Encoder{w: w, h: h, info: make([]byte, frameInfoSize), src: make([]byte, sourceSize)}
+	e := &Encoder{w: w, h: h, start: time.Now(), info: make([]byte, frameInfoSize), src: make([]byte, sourceSize)}
 	if r, _, _ := purego.SyscallN(create, uintptr(unsafe.Pointer(&e.enc))); r != 0 || e.enc == nil {
 		return nil, fmt.Errorf("h264: WelsCreateSVCEncoder failed (%d)", r)
 	}
@@ -175,7 +181,7 @@ func (e *Encoder) Encode(img *image.RGBA, key bool) (data []byte, isKey bool, er
 		e.call(vForceIntraFrame, 1)
 	}
 	toI420(e.yuv, img, e.w, e.h)
-	e.ts += 33
+	e.ts = max(e.ts+1, time.Since(e.start).Milliseconds())
 	binary.LittleEndian.PutUint64(e.src[64:], uint64(e.ts))
 	if r := e.call(vEncodeFrame, uintptr(unsafe.Pointer(&e.src[0])), uintptr(unsafe.Pointer(&e.info[0]))); r != 0 {
 		return nil, false, fmt.Errorf("h264: EncodeFrame failed (%d)", r)

@@ -41,7 +41,7 @@ func main() {
 	server := flag.String("server", "", "relay host endpoint for -mode host, e.g. ws://relay:8080/ws/host")
 	var ho hostOptions
 	flag.StringVar(&ho.password, "password", "root", "session password (random if set to \"\")")
-	flag.IntVar(&ho.fps, "fps", 30, "maximum frames per second")
+	flag.IntVar(&ho.fps, "fps", 0, "maximum frames per second, 0 for no limit")
 	flag.IntVar(&ho.quality, "quality", 60, "JPEG quality 1-100 for changing areas (still areas are resent sharper)")
 	flag.IntVar(&ho.display, "display", 0, "display index to share")
 	flag.BoolVar(&ho.test, "test-pattern", false, "stream a generated test pattern instead of the screen")
