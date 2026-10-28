@@ -178,9 +178,9 @@ away.
   Print Screen, Alt+F4), release or take control, send files, a link test,
   diagnostics, and back to the device list. Files dropped on the window, or
   picked with "Send files…", land in the remote computer's Downloads.
-* **Ctrl+Alt+Q** steps the picture through Auto, Sharp, Balanced and Smooth;
-  the title shows the setting and the scale video arrives at. Auto drops
-  the resolution to 75% or 50% when the host cannot encode fast enough.
+* **Ctrl+Alt+Q** steps the picture through Auto and 100% down to 40%;
+  the title shows the setting and the scale video arrives at. Auto aims
+  for 60 fps and moves the resolution between 40% and 100% to get there.
 * The clipboard follows you both ways: copy on the remote computer and paste
   locally, or copy locally and press Ctrl+V in the remote one.
 * `-jpeg` asks for JPEG tiles instead of video, `-fullscreen` starts full
