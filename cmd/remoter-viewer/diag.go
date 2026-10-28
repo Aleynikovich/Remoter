@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -151,6 +152,8 @@ func linkTest(base string) string {
 // qualityLabel is how a quality setting reads in the title and notices.
 func qualityLabel(q string) string {
 	switch q {
+	case "", "auto":
+		return "Auto"
 	case "sharp":
 		return "Sharp"
 	case "balanced":
@@ -158,7 +161,20 @@ func qualityLabel(q string) string {
 	case "smooth":
 		return "Smooth"
 	}
-	return "Auto"
+	if n, err := strconv.Atoi(q); err == nil {
+		return strconv.Itoa(n) + "%"
+	}
+	return q // a setting from a newer host: show it as it is
+}
+
+// qualityText is the setting with the scale the host sends at, when the
+// setting does not already say it.
+func qualityText(q string, scale int) string {
+	label := qualityLabel(q)
+	if _, err := strconv.Atoi(q); err == nil || scale <= 0 || scale == 100 {
+		return label
+	}
+	return fmt.Sprintf("%s %d%%", label, scale)
 }
 
 // copyDiagnostics puts the combined report on the local clipboard.

@@ -48,8 +48,9 @@ const (
 	scM        = 16
 )
 
-// qualities are the picture settings Ctrl+Alt+Q steps through.
-var qualities = []string{"auto", "sharp", "balanced", "smooth"}
+// qualities are the picture settings Ctrl+Alt+Q steps through: auto, or a
+// fixed share of the full resolution.
+var qualities = []string{"auto", "100", "90", "80", "70", "60", "50", "40"}
 
 // SDL's system cursors for the CSS cursor names the host sends.
 var systemCursors = map[string]int32{
@@ -876,15 +877,7 @@ func (a *app) shortcut(sc int32) bool {
 		if cur == "" {
 			cur = "auto"
 		}
-		next := qualities[(slices.Index(qualities, cur)+1)%len(qualities)]
-		a.cfg.Quality = next
-		if a.cfgPath != "" {
-			if err := a.cfg.Save(a.cfgPath); err != nil {
-				log.Printf("saving settings: %v", err)
-			}
-		}
-		a.client.Send(protocol.Message{Type: protocol.TypeQuality, Text: next})
-		a.showNotice("Picture: "+qualityLabel(next)+"  ·  Ctrl+Alt+Q changes it", 3*time.Second)
+		a.setQuality(qualities[(slices.Index(qualities, cur)+1)%len(qualities)])
 	case scPageDown, scPageUp:
 		if a.displays < 2 || !a.connected {
 			return true
@@ -1027,10 +1020,7 @@ func (a *app) tick() {
 		secs := now.Sub(a.statsAt).Seconds()
 		quality := ""
 		if a.quality != "" {
-			quality = " · " + qualityLabel(a.quality)
-			if a.qualityScale > 0 && a.qualityScale != 100 {
-				quality += fmt.Sprintf(" %d%%", a.qualityScale)
-			}
+			quality = " · " + qualityText(a.quality, a.qualityScale)
 		}
 		a.setTitle(fmt.Sprintf("Remoter · %s · %.0f fps · %.1f Mbit/s · %s%s", a.server,
 			float64(a.frames)/secs, float64(a.bytes)*8/1e6/secs, codec, quality))
@@ -1124,4 +1114,19 @@ func (a *app) texture(img *image.RGBA) uintptr {
 
 func (a *app) fullscreen() bool {
 	return sdl.GetWindowFlags(a.win)&sdlWindowFullscreenDesktop == sdlWindowFullscreenDesktop
+}
+
+// setQuality asks the host for a picture setting and remembers it.
+func (a *app) setQuality(q string) {
+	if !a.connected {
+		return
+	}
+	a.cfg.Quality = q
+	if a.cfgPath != "" {
+		if err := a.cfg.Save(a.cfgPath); err != nil {
+			log.Printf("saving settings: %v", err)
+		}
+	}
+	a.client.Send(protocol.Message{Type: protocol.TypeQuality, Text: q})
+	a.showNotice("Picture: "+qualityLabel(q)+"  ·  Ctrl+Alt+Q changes it", 3*time.Second)
 }

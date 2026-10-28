@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aleynikovich/remoter/internal/protocol"
@@ -29,6 +30,7 @@ type toolbar struct {
 	open     bool
 	sticky   bool // opened with the hotkey: stays until closed
 	keys     bool // the Send keys row is showing
+	picture  bool // the picture settings row is showing
 	hover    int  // item under the pointer, or -1
 	tabSince time.Time
 
@@ -59,6 +61,21 @@ var sendKeys = []struct {
 
 func (a *app) toolbarItems() []tbItem {
 	t := &a.bar
+	if t.picture {
+		items := []tbItem{{"picture", "‹ Back"}}
+		cur := a.cfg.Quality
+		if cur == "" {
+			cur = "auto"
+		}
+		for _, q := range qualities {
+			label := qualityLabel(q)
+			if q == cur {
+				label = "• " + label
+			}
+			items = append(items, tbItem{"q:" + q, label})
+		}
+		return items
+	}
 	if t.keys {
 		items := []tbItem{{"keys", "‹ Back"}}
 		for i, k := range sendKeys {
@@ -70,11 +87,8 @@ func (a *app) toolbarItems() []tbItem {
 	if q == "" {
 		q = "auto"
 	}
-	picture := "Picture: " + qualityLabel(q)
-	if a.qualityScale > 0 && a.qualityScale != 100 {
-		picture += fmt.Sprintf(" %d%%", a.qualityScale)
-	}
-	items := []tbItem{{"quality", picture}}
+	picture := "Picture: " + qualityText(q, a.qualityScale)
+	items := []tbItem{{"picture", picture + "…"}}
 	if a.displays > 1 {
 		items = append(items, tbItem{"monitor", fmt.Sprintf("Monitor %d/%d", a.display+1, a.displays)})
 	}
@@ -105,12 +119,12 @@ func (a *app) tabRect() image.Rectangle {
 }
 
 func (a *app) openToolbar(sticky bool) {
-	a.bar.open, a.bar.sticky, a.bar.keys, a.bar.hover = true, sticky, false, -1
+	a.bar.open, a.bar.sticky, a.bar.keys, a.bar.picture, a.bar.hover = true, sticky, false, false, -1
 	a.dirty = true
 }
 
 func (a *app) closeToolbar() {
-	a.bar.open, a.bar.keys, a.bar.tabSince = false, false, time.Time{}
+	a.bar.open, a.bar.keys, a.bar.picture, a.bar.tabSince = false, false, false, time.Time{}
 	a.dirty = true
 }
 
@@ -181,8 +195,8 @@ func (a *app) toolbarClick(down bool) bool {
 func (a *app) toolbarAction(id string) {
 	t := &a.bar
 	switch id {
-	case "quality":
-		a.shortcut(scQ)
+	case "picture":
+		t.picture = !t.picture
 	case "monitor":
 		a.shortcut(scPageDown)
 	case "fullscreen":
@@ -212,6 +226,11 @@ func (a *app) toolbarAction(id string) {
 	case "close":
 		a.closeToolbar()
 	default:
+		if q, ok := strings.CutPrefix(id, "q:"); ok {
+			a.closeToolbar()
+			a.setQuality(q)
+			break
+		}
 		var i int
 		if _, err := fmt.Sscanf(id, "key%d", &i); err == nil && i < len(sendKeys) {
 			a.closeToolbar()
