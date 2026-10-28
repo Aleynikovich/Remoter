@@ -187,14 +187,23 @@ func TestSession(t *testing.T) {
 	if s.Name != "SM-F976B" {
 		t.Errorf("name %q", s.Name)
 	}
+	// The clipboard arrives on its own socket, so it can come at any point
+	// between the video events.
+	var clip *Event
 	next := func() Event {
-		select {
-		case ev := <-s.Events():
-			return ev
-		case <-ctx.Done():
-			t.Fatal("no event")
+		for {
+			select {
+			case ev := <-s.Events():
+				if ev.Kind == EventClipboard {
+					clip = &ev
+					continue
+				}
+				return ev
+			case <-ctx.Done():
+				t.Fatal("no event")
+			}
+			return Event{}
 		}
-		return Event{}
 	}
 	if ev := next(); ev.Kind != EventSize || ev.Width != 904 || ev.Height != 2316 {
 		t.Fatalf("size event %+v", ev)
@@ -202,16 +211,21 @@ func TestSession(t *testing.T) {
 	if ev := next(); ev.Kind != EventFrame || string(ev.Data) != "SPSPPSIDR" || !ev.Key {
 		t.Fatalf("first frame %+v", ev)
 	}
-	got := map[EventKind]Event{}
-	for len(got) < 2 {
-		ev := next()
-		got[ev.Kind] = ev
-	}
-	if f := got[EventFrame]; string(f.Data) != "P" || f.Key {
+	if f := next(); f.Kind != EventFrame || string(f.Data) != "P" || f.Key {
 		t.Errorf("second frame %+v", f)
 	}
-	if c := got[EventClipboard]; c.Text != "abc" {
-		t.Errorf("clipboard %+v", c)
+	for clip == nil {
+		select {
+		case ev := <-s.Events():
+			if ev.Kind == EventClipboard {
+				clip = &ev
+			}
+		case <-ctx.Done():
+			t.Fatal("no clipboard event")
+		}
+	}
+	if clip.Text != "abc" {
+		t.Errorf("clipboard %+v", *clip)
 	}
 	s.Touch(ActionDown, 0.5, 1)
 	msg := <-control
