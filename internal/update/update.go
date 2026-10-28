@@ -71,7 +71,7 @@ type Checker struct {
 func (c *Checker) Latest(ctx context.Context) (*Release, *Asset, error) {
 	api := c.API
 	if api == "" {
-		api = "https://api.github.com/repos/" + Repo + "/releases?per_page=30"
+		api = "https://api.github.com/repos/" + Repo + "/releases?per_page=100"
 	}
 	client := c.Client
 	if client == nil {
@@ -132,17 +132,23 @@ func (r *Release) asset(name string) *Asset {
 	return nil
 }
 
-// older reports whether tag is a dev build numbered below current, which
+// older reports whether tag is a build numbered below current in the same
+// series (dev-N for the host, viewer-dev-N for the desktop viewer), which
 // happens when the newest release is deleted. Other tags are not compared.
 func older(tag, current string) bool {
-	a, ok1 := devNumber(tag)
-	b, ok2 := devNumber(current)
-	return ok1 && ok2 && a < b
+	s1, a, ok1 := buildNumber(tag)
+	s2, b, ok2 := buildNumber(current)
+	return ok1 && ok2 && s1 == s2 && a < b
 }
 
-func devNumber(tag string) (int, bool) {
-	n, err := strconv.Atoi(strings.TrimPrefix(tag, "dev-"))
-	return n, err == nil && strings.HasPrefix(tag, "dev-")
+// buildNumber splits "viewer-dev-12" into "viewer-dev-" and 12.
+func buildNumber(tag string) (series string, n int, ok bool) {
+	i := strings.LastIndex(tag, "dev-")
+	if i < 0 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(tag[i+len("dev-"):])
+	return tag[:i+len("dev-")], n, err == nil
 }
 
 // Install downloads asset, checks it, and swaps it in for the executable at

@@ -142,15 +142,38 @@ func keepUpdated(exe string, updated *atomic.Bool) {
 		switch {
 		case err != nil:
 			log.Printf("update check: %v", err)
+			setUpdateState("update check failed: " + err.Error())
 		case rel != nil:
 			log.Printf("installing %s", rel.Tag)
+			setUpdateState("installing " + rel.Tag + "…")
 			if err := update.Install(context.Background(), client, exe, asset, rel.Tag); err != nil {
 				log.Printf("update to %s: %v", rel.Tag, err)
+				setUpdateState("update to " + rel.Tag + " failed: " + err.Error())
 			} else {
+				setUpdateState(rel.Tag + " installed, restarting when you disconnect")
 				updated.Store(true)
 				return
 			}
+		default:
+			setUpdateState("up to date")
 		}
 		time.Sleep(10 * time.Minute)
 	}
+}
+
+// updateState says what the updater last did, for the start screen.
+var updateState atomic.Pointer[string]
+
+func setUpdateState(s string) { updateState.Store(&s) }
+
+// versionLine is the build and update state shown on the start screen.
+func versionLine() string {
+	v := version()
+	if update.Version == "" {
+		return v + " (local build, does not update)"
+	}
+	if s := updateState.Load(); s != nil {
+		return v + " · " + *s
+	}
+	return v
 }

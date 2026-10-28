@@ -249,6 +249,7 @@ type deviceList struct {
 	scanned  bool   // the first scan has finished
 	selected int    // index into devices; len(devices) is the address row
 	picked   bool   // the user moved the selection
+	version  string // build and update state
 	status   string
 	isErr    bool
 
@@ -303,6 +304,9 @@ func (l *deviceList) draw(out image.Point, s float64) *image.RGBA {
 	x0 := (out.X - w) / 2
 	y := px(64)
 	drawText(img, title, x0, y, "Remoter", colText)
+	if l.version != "" {
+		drawText(img, small, x0+w-textWidth(small, l.version), y, l.version, colMuted)
+	}
 	y += px(30)
 	sub := "Computers on your Tailscale network"
 	if !l.scanned {

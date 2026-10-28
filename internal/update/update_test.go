@@ -120,3 +120,20 @@ func TestSidePaths(t *testing.T) {
 		t.Error(n, o)
 	}
 }
+
+func TestOlder(t *testing.T) {
+	for _, c := range []struct {
+		tag, current string
+		want         bool
+	}{
+		{"viewer-dev-3", "viewer-dev-12", true},
+		{"viewer-dev-12", "viewer-dev-3", false},
+		{"dev-3", "dev-12", true},
+		{"dev-3", "viewer-dev-12", false}, // different series
+		{"v1.0.0", "dev-2", false},
+	} {
+		if got := older(c.tag, c.current); got != c.want {
+			t.Errorf("older(%q, %q) = %v, want %v", c.tag, c.current, got, c.want)
+		}
+	}
+}

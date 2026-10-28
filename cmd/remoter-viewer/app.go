@@ -54,11 +54,12 @@ var systemCursors = map[string]int32{
 }
 
 type app struct {
-	win, ren uintptr
-	wakeType uint32
-	woken    atomic.Bool
-	quit     bool
-	update   *atomic.Bool // a newer version is installed and waits for a restart
+	win, ren    uintptr
+	wakeType    uint32
+	woken       atomic.Bool
+	quit        bool
+	update      *atomic.Bool // a newer version is installed and waits for a restart
+	updateShown bool
 
 	cfg     viewer.Config
 	cfgPath string
@@ -928,6 +929,10 @@ func (a *app) setTitle(t string) {
 // tick does the once-a-second work: frame rate in the title, notice expiry.
 func (a *app) tick() {
 	now := time.Now()
+	if a.client != nil && a.update.Load() && !a.updateShown {
+		a.updateShown = true
+		a.showNotice("A new version is installed; it starts when you disconnect", 6*time.Second)
+	}
 	if a.client == nil && !a.manual && now.Sub(a.lastScan) > 10*time.Second {
 		a.scan()
 	}
@@ -1016,6 +1021,7 @@ func (a *app) drawStart(out image.Point) {
 	if a.formTex != 0 {
 		sdl.DestroyTexture(a.formTex)
 	}
+	a.list.version = versionLine()
 	img := a.list.draw(out, a.scale)
 	if a.manual {
 		img = a.form.draw(out, a.scale)

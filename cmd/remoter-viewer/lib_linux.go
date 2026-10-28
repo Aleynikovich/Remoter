@@ -3,7 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/ebitengine/purego"
 
@@ -40,5 +44,17 @@ func showError(err error) {
 	exec.Command("notify-send", "--app-name=Remoter", "Remoter cannot start", err.Error()).Run()
 }
 
-// setupLog keeps the log on stderr.
-func setupLog() {}
+// setupLog copies the log to ~/.cache/remoter/viewer.log, since the
+// viewer is usually started from the menu with nowhere to print.
+func setupLog() {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return
+	}
+	dir = filepath.Join(dir, "remoter")
+	os.MkdirAll(dir, 0o755)
+	f, err := os.OpenFile(filepath.Join(dir, "viewer.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err == nil {
+		log.SetOutput(io.MultiWriter(os.Stderr, f))
+	}
+}

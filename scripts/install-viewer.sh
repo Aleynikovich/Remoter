@@ -18,9 +18,12 @@ bin=${XDG_BIN_HOME:-$HOME/.local/bin}
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 mkdir -p "$bin" "$data/applications" "$data/icons/hicolor/scalable/apps"
 
-# GitHub lists releases newest first; take the first that has the viewer.
-url=$(curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=50" |
-	grep -o "\"browser_download_url\": *\"[^\"]*/$asset\"" | head -n 1 | sed 's/.*"\(https[^"]*\)"$/\1/')
+# GitHub's release order is not by date: take the highest viewer-dev-N
+# that has this build (what the viewer's own updater does too).
+url=$(curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=100" |
+	grep -o "\"browser_download_url\": *\"[^\"]*/viewer-dev-[0-9]*/$asset\"" |
+	sed 's/.*"\(https[^"]*\)"$/\1/; s/.*\/viewer-dev-\([0-9]*\)\/.*/\1 &/' |
+	sort -n | tail -n 1 | cut -d" " -f2)
 if [ -z "$url" ]; then
 	echo "Could not find a Remoter viewer release." >&2
 	exit 1
