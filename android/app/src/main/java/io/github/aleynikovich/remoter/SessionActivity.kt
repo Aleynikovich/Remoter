@@ -361,13 +361,10 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
      * scale when encoding cannot keep up and raises it again when it can.
      */
     private fun pickQuality() {
-        val modes = arrayOf("auto", "sharp", "balanced", "smooth")
-        val labels = arrayOf(
-            "Auto (scale down when the computer can't keep up)",
-            "Sharp (full resolution)",
-            "Balanced",
-            "Smooth (lower resolution, more fps)",
-        )
+        // Auto aims for 60 fps by moving the resolution between 40% and 100%;
+        // a percentage pins it.
+        val modes = arrayOf("auto") + (100 downTo 40 step 10).map { it.toString() }
+        val labels = arrayOf("Auto (60 fps, resolution adapts)") + (100 downTo 40 step 10).map { "$it% resolution" }
         AlertDialog.Builder(this)
             .setTitle("Picture quality")
             .setItems(labels) { _, which ->
@@ -550,7 +547,8 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
             "quality" -> {
                 val mode = msg.optString("text", "auto")
                 scalePercent = msg.optInt("scale", 100)
-                qualityButton.text = "Quality: ${mode.replaceFirstChar { it.uppercase() }}"
+                qualityButton.text = "Quality: " +
+                    if (mode.toIntOrNull() != null) "$mode%" else mode.replaceFirstChar { it.uppercase() }
             }
             "displays" -> {
                 displayCount = msg.optInt("count", 1).coerceAtLeast(1)
