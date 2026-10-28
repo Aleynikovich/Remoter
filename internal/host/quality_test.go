@@ -70,3 +70,24 @@ func TestFixedQuality(t *testing.T) {
 		t.Fatalf("scale %d, want 85", s)
 	}
 }
+
+func TestAutoQualityShrinksOnASlowLink(t *testing.T) {
+	q := newQuality()
+	now := time.Now()
+	tick := func(waitShare float64, seconds int) {
+		for range seconds * 10 {
+			q.waited(time.Duration(waitShare*100)*time.Millisecond, 100*time.Millisecond, now)
+			q.encoded(5*time.Millisecond, now) // a fast encoder
+			now = now.Add(100 * time.Millisecond)
+		}
+	}
+	tick(0.9, 10)
+	_, slow := q.current()
+	if slow >= 80 {
+		t.Fatalf("scale %d after 10 s of waiting on the link", slow)
+	}
+	tick(0, 60)
+	if _, s := q.current(); s != 100 {
+		t.Fatalf("scale %d once the link kept up, want 100", s)
+	}
+}

@@ -30,10 +30,16 @@ import (
 )
 
 const (
-	// window is how many updates may be on their way to a viewer before the
-	// host waits for that viewer's ack. Waiting instead of queueing keeps the
-	// picture current rather than seconds behind on a slow link.
-	window = 5
+	// window is how many updates may always be on their way to a viewer
+	// before the host waits for that viewer's ack. More may be, up to
+	// maxWindow, while their bytes fit twice what the link delivers in
+	// its quickest round trip: on a long link (a phone network) that
+	// keeps the frame rate up, while waiting instead of queueing on a
+	// slow one keeps the picture current rather than seconds behind.
+	window    = 5
+	maxWindow = 120
+	// minRTTFor is how long a round-trip time stays the quickest seen.
+	minRTTFor = 10 * time.Second
 	// recheck is how often the stream loop wakes while it waits for
 	// viewers, so a still screen gets refined and stale viewers noticed.
 	recheck = 50 * time.Millisecond
@@ -146,6 +152,14 @@ type flow struct {
 	full    bool
 	viewers map[string]*viewerState
 	wake    chan struct{}
+	sentLog [2 * maxWindow]sentUpdate // by seq % len
+}
+
+// sentUpdate is when an update went out and how big it was.
+type sentUpdate struct {
+	seq   uint32
+	at    time.Time
+	bytes int
 }
 
 type viewerState struct {
@@ -162,6 +176,30 @@ type viewerState struct {
 	lagging     bool
 	laggingAt   time.Time
 	loggedLag   time.Time // last time lagging was logged, to keep it quiet
+
+	rtt, minRTT time.Duration // latest and quickest (in minRTTFor) round trips
+	minRTTAt    time.Time
+	rate        float64 // bytes per second the viewer acked, recent best
+	rateFrom    time.Time
+	rateBytes   int
+}
+
+// room reports whether another update may go to v now.
+func (f *flow) room(v *viewerState) bool {
+	behind := f.seq - v.acked
+	if behind < window {
+		return true
+	}
+	if behind >= maxWindow || v.rate == 0 || v.minRTT == 0 {
+		return false
+	}
+	inFlight := 0
+	for s := v.acked + 1; s != f.seq+1; s++ {
+		if u := f.sentLog[s%uint32(len(f.sentLog))]; u.seq == s {
+			inFlight += u.bytes
+		}
+	}
+	return float64(inFlight) < 2*v.rate*v.minRTT.Seconds()
 }
 
 func (f *flow) poke() {
@@ -198,7 +236,25 @@ func (f *flow) leave(viewer string) {
 func (f *flow) ack(viewer string, seq uint32) {
 	f.mu.Lock()
 	if v := f.viewers[viewer]; v != nil && seq > v.acked && seq <= f.seq {
-		v.acked, v.lastAck = seq, time.Now()
+		now := time.Now()
+		for s := v.acked + 1; s != seq+1; s++ {
+			if u := f.sentLog[s%uint32(len(f.sentLog))]; u.seq == s {
+				v.rateBytes += u.bytes
+			}
+		}
+		if u := f.sentLog[seq%uint32(len(f.sentLog))]; u.seq == seq {
+			v.rtt = now.Sub(u.at)
+			if v.minRTT == 0 || v.rtt < v.minRTT || now.Sub(v.minRTTAt) > minRTTFor {
+				v.minRTT, v.minRTTAt = max(v.rtt, time.Millisecond), now
+			}
+		}
+		if v.rateFrom.IsZero() {
+			v.rateFrom = now
+		} else if el := now.Sub(v.rateFrom); el >= 250*time.Millisecond {
+			v.rate = max(float64(v.rateBytes)/el.Seconds(), 0.8*v.rate)
+			v.rateFrom, v.rateBytes = now, 0
+		}
+		v.acked, v.lastAck = seq, now
 	}
 	f.mu.Unlock()
 	f.poke()
@@ -247,7 +303,7 @@ func (f *flow) ready() bool {
 		if now.Sub(v.blockedFrom) > lagPeriod {
 			v.blocked, v.blockedFrom = 0, now
 		}
-		if behind < window {
+		if f.room(v) {
 			if !v.full.IsZero() {
 				v.blocked += now.Sub(v.full)
 				v.full = time.Time{}
@@ -273,7 +329,7 @@ func (f *flow) ready() bool {
 		// Everyone is lagging or silent: keep a trickle going so they
 		// can recover, at most one update per window per viewer.
 		for _, v := range f.viewers {
-			if f.seq-v.acked < window {
+			if f.room(v) {
 				return true
 			}
 		}
@@ -294,7 +350,8 @@ func (f *flow) summary() string {
 		case v.lagging:
 			state = "lagging"
 		}
-		parts = append(parts, fmt.Sprintf("viewer %s %s (%d behind)", id, state, f.seq-v.acked))
+		parts = append(parts, fmt.Sprintf("viewer %s %s (%d behind, round trip %s, %.1f Mbit/s)",
+			id, state, f.seq-v.acked, v.rtt.Round(time.Millisecond), v.rate*8/1e6))
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
@@ -309,9 +366,10 @@ func (f *flow) next() (seq uint32, full bool) {
 	return f.seq + 1, full
 }
 
-func (f *flow) sent(seq uint32) {
+func (f *flow) sent(seq uint32, bytes int) {
 	f.mu.Lock()
 	f.seq = seq
+	f.sentLog[seq%uint32(len(f.sentLog))] = sentUpdate{seq, time.Now(), bytes}
 	f.mu.Unlock()
 }
 
@@ -478,6 +536,7 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 	}
 	var cursor string
 	next := time.Now()
+	lastFrame := next
 	for {
 		waitStart := time.Now()
 		wait := time.Until(next)
@@ -510,6 +569,8 @@ func (a *Agent) stream(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 		f := frame{img: img, wait: t0.Sub(waitStart), capture: time.Since(t0)}
+		a.res.waited(f.wait, time.Since(lastFrame), time.Now())
+		lastFrame = time.Now()
 		f.seq, f.full = a.flow.next()
 		if a.Cursor != nil {
 			if c := a.Cursor(); c != "" && (c != cursor || f.full) {
@@ -578,7 +639,7 @@ func (a *Agent) encodeAndSend(ctx context.Context, conn *websocket.Conn, frames 
 		tm.send += time.Since(t2)
 		tm.frames++
 		tm.bytes += len(msg)
-		a.flow.sent(f.seq)
+		a.flow.sent(f.seq, len(msg))
 	}
 	return nil
 }

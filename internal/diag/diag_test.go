@@ -6,14 +6,16 @@ import (
 	"testing"
 )
 
-func TestRingKeepsLastLines(t *testing.T) {
+func TestRingKeepsFirstAndLastLines(t *testing.T) {
 	r := &Ring{}
-	for i := range Lines + 5 {
+	n := StartLines + Lines + 5
+	for i := range n {
 		fmt.Fprintf(r, "line %d\n", i)
 	}
 	fmt.Fprint(r, "half")
 	got := strings.Split(r.String(), "\n")
-	if len(got) != Lines || got[0] != "line 5" || got[len(got)-1] != fmt.Sprintf("line %d", Lines+4) {
-		t.Fatalf("kept %d lines, first %q, last %q", len(got), got[0], got[len(got)-1])
+	if len(got) != StartLines+1+Lines || got[0] != "line 0" || got[StartLines] != "... 5 lines left out ..." ||
+		got[StartLines+1] != fmt.Sprintf("line %d", StartLines+5) || got[len(got)-1] != fmt.Sprintf("line %d", n-1) {
+		t.Fatalf("kept %d lines: %q ... %q", len(got), got[:3], got[len(got)-3:])
 	}
 }
