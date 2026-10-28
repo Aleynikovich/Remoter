@@ -60,7 +60,11 @@ func (a *app) diagnosticsReport(host string) string {
 	if a.dec != nil {
 		dec = fmt.Sprintf("%T", a.dec)
 	}
-	fmt.Fprintf(&b, "server: %s (%s), decoder: %s, video size %dx%d, keyboard captured: %v\n", a.server, a.client.URL, dec, a.videoSize.X, a.videoSize.Y, a.captured)
+	url := ""
+	if a.client != nil {
+		url = a.client.URL
+	}
+	fmt.Fprintf(&b, "server: %s (%s), decoder: %s, video size %dx%d, keyboard captured: %v\n", a.server, url, dec, a.videoSize.X, a.videoSize.Y, a.captured)
 	if a.noVideo != "" {
 		fmt.Fprintf(&b, "host says no video: %s\n", a.noVideo)
 	}
