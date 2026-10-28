@@ -45,6 +45,7 @@ const (
 	scV        = 25
 	scD        = 7
 	scQ        = 20
+	scM        = 16
 )
 
 // qualities are the picture settings Ctrl+Alt+Q steps through.
@@ -117,8 +118,11 @@ type app struct {
 	times         timings
 	history       []statSecond // the last minute, for diagnostics
 	diagAsked     time.Time    // when a diagnostics report was asked for; zero if not
-	diagHost      *string      // the host's report, waiting for the link test
-	linkTest      chan string  // the link test's result line
+	bar           toolbar
+	dropped       []string    // files dropped on the window, until the drop ends
+	jobs          chan func() // work for the window's thread, see later
+	diagHost      *string     // the host's report, waiting for the link test
+	linkTest      chan string // the link test's result line
 	linkResult    string
 	quality       string      // what the host says it uses
 	qualityScale  int         // percent of full resolution video is sent at
@@ -187,6 +191,7 @@ func newApp(cfg viewer.Config, cfgPath string, fullscreen bool, newDec func() (v
 		buttons: map[int]bool{},
 		swallow: map[int32]bool{},
 		cursors: map[string]uintptr{},
+		jobs:    make(chan func(), 64),
 		scale:   1,
 		dirty:   true,
 	}
@@ -219,6 +224,7 @@ func (a *app) run() bool {
 		a.woken.Store(false)
 		a.drainClient()
 		a.drainScans()
+		a.drainJobs()
 		a.flushMove()
 		a.tick()
 		if a.dirty {
@@ -280,10 +286,28 @@ func (a *app) handle(ev *sdlEvent) {
 		}
 	case sdlMouseMotion:
 		a.mouse = [2]float64{float64(ev.i32(20)), float64(ev.i32(24))}
-		a.moved = a.connected
+		a.moved = a.connected && !a.toolbarMotion()
 	case sdlMouseButtonDown, sdlMouseButtonUp:
 		a.mouse = [2]float64{float64(ev.i32(20)), float64(ev.i32(24))}
+		if a.client != nil && a.toolbarClick(ev.typ() == sdlMouseButtonDown) {
+			return
+		}
 		a.mouseButton(int(ev.u8(16)), ev.typ() == sdlMouseButtonDown)
+	case sdlDropFile:
+		p := uintptr(*(*uint64)(unsafe.Pointer(&ev[8])))
+		if p == 0 {
+			return
+		}
+		path := goString(p)
+		sdl.Free(p)
+		a.dropped = append(a.dropped, path)
+	case sdlDropComplete:
+		if a.connected {
+			a.sendFiles(a.dropped)
+		} else if len(a.dropped) > 0 {
+			a.showNotice("Connect to a computer first, then drop files on the window to send them", 5*time.Second)
+		}
+		a.dropped = nil
 	case sdlMouseWheel:
 		if !a.connected {
 			return
@@ -508,6 +532,7 @@ func (a *app) disconnect(status string) {
 		return
 	}
 	a.releaseHeld()
+	a.closeToolbar()
 	a.cancel()
 	a.client, a.cancel, a.connected = nil, nil, false
 	a.capture(false)
@@ -824,7 +849,7 @@ func (a *app) shortcut(sc int32) bool {
 		}
 	case scEnter:
 		a.releaseHeld()
-		if sdl.GetWindowFlags(a.win)&sdlWindowFullscreenDesktop == sdlWindowFullscreenDesktop {
+		if a.fullscreen() {
 			sdl.SetWindowFullscreen(a.win, 0)
 		} else {
 			sdl.SetWindowFullscreen(a.win, sdlWindowFullscreenDesktop)
@@ -836,6 +861,12 @@ func (a *app) shortcut(sc int32) bool {
 			go func(ch chan<- string, base string) { ch <- linkTest(base) }(a.linkTest, viewer.HTTPBase(a.client.URL))
 			a.client.Send(protocol.Message{Type: protocol.TypeDiagnostics})
 			a.showNotice("Collecting diagnostics and testing the connection…", 15*time.Second)
+		}
+	case scM:
+		if a.bar.open {
+			a.closeToolbar()
+		} else if a.connected {
+			a.openToolbar(true)
 		}
 	case scQ:
 		if !a.connected {
@@ -973,6 +1004,9 @@ func (a *app) tick() {
 	if !a.diagAsked.IsZero() {
 		a.finishDiagnostics(now)
 	}
+	if !a.bar.open && !a.bar.tabSince.IsZero() && now.Sub(a.bar.tabSince) > 250*time.Millisecond {
+		a.openToolbar(false)
+	}
 	if a.notice != "" && now.After(a.noticeUntil) {
 		a.showNotice("", 0)
 	}
@@ -1043,6 +1077,7 @@ func (a *app) render() {
 			d := sdlRect{int32(a.dst.Min.X), int32(a.dst.Min.Y), int32(a.dst.Dx()), int32(a.dst.Dy())}
 			sdl.RenderCopy(a.ren, tex, nil, &d)
 		}
+		a.drawToolbar(out)
 	}
 
 	if a.notice != "" {
@@ -1085,4 +1120,8 @@ func (a *app) texture(img *image.RGBA) uintptr {
 	sdl.SetTextureBlendMode(tex, sdlBlendBlend)
 	sdl.UpdateTexture(tex, nil, unsafe.Pointer(&img.Pix[0]), int32(img.Stride))
 	return tex
+}
+
+func (a *app) fullscreen() bool {
+	return sdl.GetWindowFlags(a.win)&sdlWindowFullscreenDesktop == sdlWindowFullscreenDesktop
 }

@@ -157,7 +157,7 @@ func keepUpdated(exe string, updated *atomic.Bool) {
 		default:
 			setUpdateState("up to date")
 		}
-		time.Sleep(10 * time.Minute)
+		time.Sleep(2 * time.Minute)
 	}
 }
 

@@ -172,6 +172,12 @@ away.
   a diagnostics report (a ping and download test, the viewer's frame,
   decode and draw times for the last minute, then the host's settings and
   log) to the clipboard.
+* Point at the blue tab in the middle of the top edge (or press
+  **Ctrl+Alt+M**) for the toolbar: picture quality, monitor, full screen,
+  Send keys (Windows key, Alt+Tab, Ctrl+Alt+Del, Ctrl+Shift+Esc, Win+L,
+  Print Screen, Alt+F4), release or take control, send files, a link test,
+  diagnostics, and back to the device list. Files dropped on the window, or
+  picked with "Send files…", land in the remote computer's Downloads.
 * **Ctrl+Alt+Q** steps the picture through Auto, Sharp, Balanced and Smooth;
   the title shows the setting and the scale video arrives at. Auto drops
   the resolution to 75% or 50% when the host cannot encode fast enough.

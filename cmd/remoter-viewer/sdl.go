@@ -42,6 +42,8 @@ const (
 	sdlMouseButtonDown = 0x401
 	sdlMouseButtonUp   = 0x402
 	sdlMouseWheel      = 0x403
+	sdlDropFile        = 0x1000
+	sdlDropComplete    = 0x1003
 	sdlClipboardUpdate = 0x900
 	sdlRenderReset     = 0x2000 // render targets reset; 0x2001 device reset
 
