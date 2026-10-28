@@ -174,7 +174,7 @@ away.
   log) to the clipboard.
 * Point at the blue tab in the middle of the top edge (or press
   **Ctrl+Alt+M**) for the toolbar: picture quality, monitor, full screen,
-  Send keys (Windows key, Alt+Tab, Ctrl+Alt+Del, Ctrl+Shift+Esc, Win+L,
+  Send keys (Windows key, Alt+Tab, Ctrl+Shift+Esc, Win+L,
   Print Screen, Alt+F4), release or take control, send files, a link test,
   diagnostics, and back to the device list. Files dropped on the window, or
   picked with "Send files…", land in the remote computer's Downloads.

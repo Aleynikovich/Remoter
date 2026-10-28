@@ -51,7 +51,6 @@ var sendKeys = []struct {
 }{
 	{"Windows key", []string{"MetaLeft"}},
 	{"Alt+Tab", []string{"AltLeft", "Tab"}},
-	{"Ctrl+Alt+Del", []string{"ControlLeft", "AltLeft", "Delete"}},
 	{"Ctrl+Shift+Esc", []string{"ControlLeft", "ShiftLeft", "Escape"}},
 	{"Win+L", []string{"MetaLeft", "KeyL"}},
 	{"Print Screen", []string{"PrintScreen"}},
