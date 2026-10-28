@@ -64,12 +64,17 @@ type gdi struct {
 	turn     int
 }
 
-func newNative(display int) nativeSource {
-	// Capture in physical pixels on scaled displays.
+// dpiAware makes display bounds and captures use physical pixels on
+// scaled displays.
+var dpiAware = sync.OnceFunc(func() {
 	if procSetProcessDpiAwarenessCtx.Find() == nil {
 		procSetProcessDpiAwarenessCtx.Call(perMonitorAwareV2)
 	}
-	return &gdi{display: display}
+})
+
+func newNative(display int) nativeSource {
+	dpiAware()
+	return &windowsSource{display: display, gdi: &gdi{display: display}}
 }
 
 func (g *gdi) Capture() (image.Image, error) {
