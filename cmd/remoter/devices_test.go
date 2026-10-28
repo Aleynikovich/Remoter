@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -43,5 +44,13 @@ func TestFromTailnet(t *testing.T) {
 		if got := fromTailnet(&http.Request{RemoteAddr: addr}); got != want {
 			t.Errorf("%s: got %v, want %v", addr, got, want)
 		}
+	}
+}
+
+func TestSpeedtestSize(t *testing.T) {
+	rec := httptest.NewRecorder()
+	speedtestHandler(rec, httptest.NewRequest("GET", "/speedtest?mb=2", nil))
+	if rec.Body.Len() != 2<<20 {
+		t.Fatalf("sent %d bytes, want 2 MiB", rec.Body.Len())
 	}
 }

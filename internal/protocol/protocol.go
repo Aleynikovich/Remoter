@@ -44,6 +44,10 @@ const (
 	// host -> server -> every viewer: why the host sends JPEG instead of
 	// H.264 video, in Text; empty when it can send video.
 	TypeVideo = "video"
+	// viewer -> server -> host: use quality Text ("auto", "sharp",
+	// "balanced" or "smooth"). host -> server -> every viewer: the quality
+	// in use and the Scale (percent of full resolution) video is sent at.
+	TypeQuality = "quality"
 	// viewer -> server -> host: send diagnostics. host -> server -> every
 	// viewer: the host's diagnostics (settings, recent log) in Text.
 	TypeDiagnostics = "diagnostics"
@@ -69,6 +73,7 @@ type Message struct {
 	Cursor   string `json:"cursor,omitempty"`
 	Display  int    `json:"display,omitempty"`
 	Count    int    `json:"count,omitempty"`
+	Scale    int    `json:"scale,omitempty"`
 	// Video is set on TypeRefresh when the viewer can decode H.264.
 	Video bool `json:"video,omitempty"`
 }
@@ -77,7 +82,7 @@ type Message struct {
 // type on to the host.
 func FromViewer(typ string) bool {
 	switch typ {
-	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics:
+	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics, TypeQuality:
 		return true
 	}
 	return false
@@ -87,7 +92,7 @@ func FromViewer(typ string) bool {
 // type on to every viewer.
 func ToViewers(typ string) bool {
 	switch typ {
-	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics:
+	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics, TypeQuality:
 		return true
 	}
 	return false

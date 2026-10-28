@@ -33,7 +33,10 @@ import (
 const idEnv = "REMOTER_HOST_ID"
 
 func main() {
-	mode := flag.String("mode", "all", `what to run: "all" (relay and host), "server" (relay only) or "host" (host only)`)
+	if len(os.Args) > 1 && os.Args[1] == "send" {
+		os.Exit(runSend(os.Args[2:]))
+	}
+	mode := flag.String("mode", "all", `what to run: "all" (relay and host), "server" (relay only), "host" (host only) or "share" (only receive files and links from your other devices)`)
 	addr := flag.String("addr", ":8080", "relay listen address")
 	server := flag.String("server", "", "relay host endpoint for -mode host, e.g. ws://relay:8080/ws/host")
 	var ho hostOptions
@@ -75,8 +78,9 @@ func main() {
 		fmt.Println(version())
 		return
 	}
-	runServer, runAgent := *mode != "host", *mode != "server"
-	if *mode != "all" && *mode != "server" && *mode != "host" {
+	runServer, runAgent := *mode == "all" || *mode == "server", *mode == "all" || *mode == "host"
+	shareOnly := *mode == "share"
+	if !runServer && !runAgent && !shareOnly {
 		log.Fatalf("unknown -mode %q", *mode)
 	}
 	if runAgent {
@@ -154,8 +158,8 @@ func main() {
 
 	done := make(chan struct{})
 	var srv *http.Server
-	if runServer {
-		srv, err = startServer(ctx, *addr, func() { restart(errStop) })
+	if runServer || shareOnly {
+		srv, err = startServer(ctx, *addr, runServer, func() { restart(errStop) })
 		if ctx.Err() != nil && !errors.Is(context.Cause(ctx), errRestart) {
 			return
 		}
@@ -212,30 +216,39 @@ func version() string {
 	return update.Version
 }
 
-// startServer serves the relay and web viewer.
-func startServer(ctx context.Context, addr string, stop func()) (*http.Server, error) {
+// startServer serves the relay and web viewer, and file sharing with your
+// other devices. With relay false it serves only file sharing (-mode share).
+func startServer(ctx context.Context, addr string, relayToo bool, stop func()) (*http.Server, error) {
 	static, err := fs.Sub(web.Files, "static")
 	if err != nil {
 		return nil, err
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/ws/", relay.New().Handler())
-	// The viewer shows which build is running and notices when it changes.
-	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		fmt.Fprint(w, version())
-	})
 	mux.Handle("/shutdown", shutdownHandler(stop))
+	mux.HandleFunc("/ping", pingHandler)
+	mux.HandleFunc("/speedtest", speedtestHandler)
 	// Viewers that cannot ask Tailscale themselves list the tailnet here.
 	_, port, _ := net.SplitHostPort(addr)
 	mux.Handle("/devices", devicesHandler(cmp.Or(port, "8080")))
-	// Embedded files carry no dates, so tell browsers to check every time;
-	// otherwise a viewer could keep running an old viewer.js after an update.
-	files := http.FileServerFS(static)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
-		files.ServeHTTP(w, r)
-	})
+	registerShare(mux)
+	if relayToo {
+		mux.Handle("/ws/", relay.New().Handler())
+		// The viewer shows which build is running and notices when it
+		// changes. A share-only Remoter leaves it out, so viewers do not
+		// list it as a computer to control.
+		mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			fmt.Fprint(w, version())
+		})
+		// Embedded files carry no dates, so tell browsers to check every
+		// time; otherwise a viewer could keep running an old viewer.js
+		// after an update.
+		files := http.FileServerFS(static)
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache")
+			files.ServeHTTP(w, r)
+		})
+	}
 
 	// If the port is taken, by the previous process right after an update or
 	// by an older Remoter still running, wait for it. That lets a new copy be
@@ -268,7 +281,11 @@ func startServer(ctx context.Context, addr string, stop func()) (*http.Server, e
 			log.Fatal(err)
 		}
 	}()
-	log.Printf("viewer at http://localhost%s (or this computer's address)", portOf(addr))
+	if relayToo {
+		log.Printf("viewer at http://localhost%s (or this computer's address)", portOf(addr))
+	} else {
+		log.Printf("receiving files and links on %s; drop files to send at http://localhost%s/share/", portOf(addr), portOf(addr))
+	}
 	return srv, nil
 }
 

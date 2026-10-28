@@ -119,6 +119,8 @@ type Agent struct {
 
 	flow flow
 
+	res *quality // resolution video is encoded at
+
 	videoMu  sync.Mutex
 	videoErr string // why the encoder was turned off for the session
 
@@ -270,6 +272,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.RefineQuality = 90
 	}
 	a.flow = flow{viewers: make(map[string]*viewerState), wake: make(chan struct{}, 1)}
+	if a.res == nil {
+		a.res = newQuality()
+	}
 	if a.Input == nil {
 		a.Input = LogInput{}
 	}
@@ -342,6 +347,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := send(ctx, conn, protocol.Message{Type: protocol.TypeVideo, Text: a.whyNoVideo()}); err != nil {
 				return err
 			}
+			if err := a.sendQuality(ctx, conn); err != nil {
+				return err
+			}
 		case protocol.TypeSelectDisplay:
 			if a.Monitors == nil {
 				continue
@@ -361,6 +369,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			if err := send(ctx, conn, protocol.Message{Type: protocol.TypeDiagnostics, Text: text}); err != nil {
 				return err
+			}
+		case protocol.TypeQuality:
+			if a.res.set(m.Text) {
+				log.Printf("viewer %s set quality %s", m.Viewer, m.Text)
 			}
 		case protocol.TypeAck:
 			a.flow.ack(m.Viewer, m.Seq)
@@ -464,11 +476,22 @@ type frame struct {
 
 // encodeAndSend encodes the captures it is handed and sends them.
 func (a *Agent) encodeAndSend(ctx context.Context, conn *websocket.Conn, frames <-chan frame) error {
-	st := &streamer{a: a, tiles: &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter}}
+	st := &streamer{a: a, tiles: &stream.Encoder{Quality: a.Quality, RefineQuality: a.RefineQuality, RefineAfter: refineAfter},
+		interval: time.Second / time.Duration(a.FPS)}
 	defer st.closeVideo()
 	tm := timings{start: time.Now()}
 	for f := range frames {
-		tm.report(st.usingVideo)
+		select {
+		case <-a.res.changed:
+			mode, scale := a.res.current()
+			log.Printf("quality %s: video at %d%% of full resolution", mode, scale)
+			if err := a.sendQuality(ctx, conn); err != nil {
+				return err
+			}
+		default:
+		}
+		_, scale := a.res.current()
+		tm.report(st.usingVideo, scale)
 		tm.size = f.img.Bounds().Size()
 		tm.wait += f.wait
 		tm.capture += f.capture
@@ -506,7 +529,7 @@ type timings struct {
 
 const timingsEvery = 10 * time.Second
 
-func (t *timings) report(video bool) {
+func (t *timings) report(video bool, scale int) {
 	el := time.Since(t.start)
 	if el < timingsEvery {
 		return
@@ -514,7 +537,7 @@ func (t *timings) report(video bool) {
 	if t.frames > 0 {
 		mode := "JPEG"
 		if video {
-			mode = "H.264"
+			mode = fmt.Sprintf("H.264 at %d%%", scale)
 		}
 		per := func(d time.Duration) string {
 			return (d / time.Duration(max(t.loops, 1))).Round(100 * time.Microsecond).String()
@@ -534,7 +557,9 @@ type streamer struct {
 
 	video      VideoEncoder
 	usingVideo bool
-	prev       []byte // last capture, to skip encoding a still screen
+	interval   time.Duration // between frames at the FPS cap
+	scaled     *image.RGBA   // the capture shrunk to the quality's scale
+	prev       []byte        // last capture, to skip encoding a still screen
 	changed    time.Time
 }
 
@@ -558,6 +583,22 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 		return s.buf, nil
 	}
 
+	// Skip a still screen, but only after it has had time to sharpen.
+	now := time.Now()
+	if !bytesEqualRGBA(s.prev, img) {
+		s.changed = now
+		s.prev = copyRGBA(s.prev, img)
+	} else if !full && now.Sub(s.changed) > videoSettle {
+		return nil, nil
+	}
+
+	start := time.Now()
+	if _, scale := s.a.res.current(); scale < 100 {
+		w := max(img.Rect.Dx()*scale/100&^1, 16)
+		h := max(img.Rect.Dy()*scale/100&^1, 16)
+		s.scaled = stream.Downscale(s.scaled, img, w, h)
+		img = s.scaled
+	}
 	w, h := img.Rect.Dx(), img.Rect.Dy()
 	if s.video != nil {
 		if vw, vh := s.video.Size(); vw != w&^1 || vh != h&^1 {
@@ -575,15 +616,8 @@ func (s *streamer) encode(src image.Image, seq uint32, full bool) ([]byte, error
 		full = true
 	}
 
-	// Skip a still screen, but only after it has had time to sharpen.
-	now := time.Now()
-	if !bytesEqualRGBA(s.prev, img) {
-		s.changed = now
-		s.prev = copyRGBA(s.prev, img)
-	} else if !full && now.Sub(s.changed) > videoSettle {
-		return nil, nil
-	}
 	data, key, err := s.video.Encode(img, full)
+	s.a.res.encoded(time.Since(start), s.interval, time.Now())
 	if err != nil {
 		log.Printf("H.264 failed, sending JPEG: %v", err)
 		s.a.turnOffVideo(err)
@@ -673,6 +707,12 @@ func (a *Agent) turnOffVideo(err error) {
 	a.videoMu.Lock()
 	a.videoErr = "H.264 failed on the host: " + err.Error()
 	a.videoMu.Unlock()
+}
+
+// sendQuality tells viewers which quality is in use and at what scale.
+func (a *Agent) sendQuality(ctx context.Context, conn *websocket.Conn) error {
+	mode, scale := a.res.current()
+	return send(ctx, conn, protocol.Message{Type: protocol.TypeQuality, Text: mode, Scale: scale})
 }
 
 // sendDisplays tells viewers which displays they can switch between.
