@@ -25,6 +25,12 @@
     <span id="build" title="Remoter build running on the remote computer"></span>
     <span id="notice" role="status"></span>
     <select id="display" title="Display" hidden></select>
+    <select id="quality" title="Picture quality: Auto lowers the resolution when the remote computer cannot encode fast enough">
+      <option value="auto">Auto</option>
+      <option value="sharp">Sharp</option>
+      <option value="balanced">Balanced</option>
+      <option value="smooth">Smooth</option>
+    </select>
     <select id="keys" title="Send a key combination">
       <option value="">Send keys…</option>
       <option value="MetaLeft">Windows key</option>
@@ -47,6 +53,7 @@
     <p>Diagnostics from this viewer and the remote computer. Copy them and paste them into the chat.</p>
     <textarea id="diag-text" readonly rows="20" cols="100"></textarea>
     <div class="diag-buttons">
+      <button id="diag-link" class="secondary">Test link</button>
       <button id="diag-copy">Copy</button>
       <button id="diag-close" class="secondary">Close</button>
     </div>
