@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,7 @@ type toolbar struct {
 	sticky   bool // opened with the hotkey: stays until closed
 	keys     bool // the Send keys row is showing
 	picture  bool // the picture settings row is showing
+	ask      bool // the metered connection question is showing
 	hover    int  // item under the pointer, or -1
 	tabSince time.Time
 
@@ -61,6 +63,14 @@ var sendKeys = []struct {
 
 func (a *app) toolbarItems() []tbItem {
 	t := &a.bar
+	if t.ask {
+		return []tbItem{
+			{"", "You're on a metered connection. Switch to data saver?"},
+			{"saver:yes", "Switch"},
+			{"saver:always", "Always on metered"},
+			{"saver:no", "Not now"},
+		}
+	}
 	if t.picture {
 		items := []tbItem{{"picture", "‹ Back"}}
 		cur := a.cfg.Quality
@@ -88,7 +98,11 @@ func (a *app) toolbarItems() []tbItem {
 		q = "auto"
 	}
 	picture := "Picture: " + qualityText(q, a.qualityScale)
-	items := []tbItem{{"picture", picture + "…"}}
+	saver := "Data saver: off"
+	if a.saver {
+		saver = "Data saver: on"
+	}
+	items := []tbItem{{"picture", picture + "…"}, {"saver", saver + " (" + dataText(a.sessionBytes) + " used)"}}
 	if a.displays > 1 {
 		items = append(items, tbItem{"monitor", fmt.Sprintf("Monitor %d/%d", a.display+1, a.displays)})
 	}
@@ -119,12 +133,12 @@ func (a *app) tabRect() image.Rectangle {
 }
 
 func (a *app) openToolbar(sticky bool) {
-	a.bar.open, a.bar.sticky, a.bar.keys, a.bar.picture, a.bar.hover = true, sticky, false, false, -1
+	a.bar.open, a.bar.sticky, a.bar.keys, a.bar.picture, a.bar.ask, a.bar.hover = true, sticky, false, false, false, -1
 	a.dirty = true
 }
 
 func (a *app) closeToolbar() {
-	a.bar.open, a.bar.keys, a.bar.picture, a.bar.tabSince = false, false, false, time.Time{}
+	a.bar.open, a.bar.keys, a.bar.picture, a.bar.ask, a.bar.tabSince = false, false, false, false, time.Time{}
 	a.dirty = true
 }
 
@@ -195,8 +209,24 @@ func (a *app) toolbarClick(down bool) bool {
 func (a *app) toolbarAction(id string) {
 	t := &a.bar
 	switch id {
+	case "":
 	case "picture":
 		t.picture = !t.picture
+	case "saver":
+		a.setSaver(!a.saver)
+	case "saver:yes", "saver:always":
+		a.closeToolbar()
+		if id == "saver:always" {
+			a.cfg.SaverOnMetered = true
+			if a.cfgPath != "" {
+				if err := a.cfg.Save(a.cfgPath); err != nil {
+					log.Printf("saving settings: %v", err)
+				}
+			}
+		}
+		a.setSaver(true)
+	case "saver:no":
+		a.closeToolbar()
 	case "monitor":
 		a.shortcut(scPageDown)
 	case "fullscreen":
@@ -317,7 +347,7 @@ func toolbarImage(items []tbItem, hover int, s float64, maxW int) (*image.RGBA, 
 			fill(img, b, colBarHover)
 		}
 		c := colText
-		if it.id == "close" {
+		if it.id == "close" || it.id == "" {
 			c = colMuted
 		}
 		drawText(img, f, b.Min.X+pad, b.Min.Y+px(21), it.label, c)

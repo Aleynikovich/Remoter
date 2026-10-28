@@ -21,6 +21,9 @@ type Config struct {
 	// Quality is the picture quality asked of hosts: auto, sharp, balanced
 	// or smooth ("" is auto).
 	Quality string `json:"quality,omitempty"`
+	// SaverOnMetered turns data saver on by itself on a metered
+	// connection, instead of asking.
+	SaverOnMetered bool `json:"saverOnMetered,omitempty"`
 }
 
 // PasswordFor is the password to try for server: the one that worked last

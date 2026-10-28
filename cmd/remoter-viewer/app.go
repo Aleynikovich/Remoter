@@ -129,6 +129,11 @@ type app struct {
 	diagHost      *string     // the host's report, waiting for the link test
 	linkTest      chan string // the link test's result line
 	linkResult    string
+	saver         bool        // data saver asked of the host
+	hostSaver     bool        // whether the host says data saver is on
+	saverAsked    bool        // a metered connection was offered data saver this session
+	meteredAt     time.Time   // when the connection was last checked for metering
+	sessionBytes  int64       // received this session, for data saver's counter
 	quality       string      // what the host says it uses
 	qualityScale  int         // percent of full resolution video is sent at
 	out           image.Point // renderer output size
@@ -524,6 +529,7 @@ func (a *app) connectAs(label string) {
 		label = f.values[0]
 	}
 	a.client, a.cancel, a.server = c, cancel, label
+	a.saver, a.hostSaver, a.saverAsked, a.sessionBytes = false, false, false, 0
 	a.list.status = ""
 	go c.Run(ctx)
 	sdl.StopTextInput()
@@ -588,12 +594,17 @@ func (a *app) drainClient() {
 			if q := a.cfg.Quality; q != "" && q != "auto" {
 				a.client.Send(protocol.Message{Type: protocol.TypeQuality, Text: q})
 			}
+			if a.saver {
+				a.client.Send(protocol.Message{Type: protocol.TypeDataSaver, OK: true})
+			}
+			a.checkMetered()
 			a.capture(true)
 			a.syncClipboard()
 			a.setTitle("Remoter · " + a.server)
 			a.showNotice("Keyboard and mouse go to the remote computer  ·  Ctrl+Alt+D releases them", 5*time.Second)
 		case viewer.EventFrame:
 			a.bytes += len(ev.Data)
+			a.sessionBytes += int64(len(ev.Data))
 			if len(ev.Data) > 0 && ev.Data[0] == 'V' {
 				pending = a.videoFrame(ev.Data) || pending
 			} else {
@@ -752,6 +763,8 @@ func (a *app) hostMessage(m protocol.Message) {
 		}
 	case protocol.TypeQuality:
 		a.quality, a.qualityScale = m.Text, m.Scale
+	case protocol.TypeDataSaver:
+		a.hostSaver = m.OK
 	case protocol.TypeVideo:
 		a.noVideo = m.Text
 	case protocol.TypeClipboard:
@@ -1005,6 +1018,9 @@ func (a *app) tick() {
 	if !a.diagAsked.IsZero() {
 		a.finishDiagnostics(now)
 	}
+	if a.connected && now.Sub(a.meteredAt) > 30*time.Second {
+		a.checkMetered()
+	}
 	if !a.bar.open && !a.bar.tabSince.IsZero() && now.Sub(a.bar.tabSince) > 250*time.Millisecond {
 		a.openToolbar(false)
 	}
@@ -1030,6 +1046,10 @@ func (a *app) tick() {
 		if a.quality != "" {
 			quality = " · " + qualityText(a.quality, a.qualityScale)
 		}
+		if a.hostSaver {
+			quality += " · data saver"
+		}
+		quality += " · " + dataText(a.sessionBytes) + " used"
 		a.setTitle(fmt.Sprintf("Remoter · %s · %.0f fps · %.1f Mbit/s · %s%s", a.server,
 			float64(a.frames)/secs, float64(a.bytes)*8/1e6/secs, codec, quality))
 		t := a.times
@@ -1137,6 +1157,69 @@ func (a *app) setQuality(q string) {
 	}
 	a.client.Send(protocol.Message{Type: protocol.TypeQuality, Text: q})
 	a.showNotice("Picture: "+qualityLabel(q)+"  ·  Ctrl+Alt+Q changes it", 3*time.Second)
+}
+
+// setSaver turns data saver on or off for this session.
+func (a *app) setSaver(on bool) {
+	if !a.connected {
+		return
+	}
+	a.saver = on
+	a.client.Send(protocol.Message{Type: protocol.TypeDataSaver, OK: on})
+	if on {
+		a.showNotice("Data saver on: at most 15 fps, half resolution  ·  "+dataText(a.sessionBytes)+" used so far", 4*time.Second)
+	} else if a.cfg.SaverOnMetered {
+		// Undoes "Always on metered": the next metered connection asks.
+		a.cfg.SaverOnMetered = false
+		if a.cfgPath != "" {
+			if err := a.cfg.Save(a.cfgPath); err != nil {
+				log.Printf("saving settings: %v", err)
+			}
+		}
+		a.showNotice("Data saver off  ·  it will ask again on the next metered connection", 4*time.Second)
+	} else {
+		a.showNotice("Data saver off", 2*time.Second)
+	}
+}
+
+// checkMetered looks at whether the connection is metered, in the
+// background, and offers data saver the first time it is.
+func (a *app) checkMetered() {
+	a.meteredAt = time.Now()
+	if a.saver || a.saverAsked {
+		return
+	}
+	go func() {
+		m, err := metered()
+		if err != nil || !m {
+			return
+		}
+		a.later(func() {
+			if !a.connected || a.saver || a.saverAsked {
+				return
+			}
+			a.saverAsked = true
+			if a.cfg.SaverOnMetered {
+				a.setSaver(true)
+				a.showNotice("Metered connection: data saver is on  ·  the toolbar turns it off", 5*time.Second)
+				return
+			}
+			a.showNotice("", 0)
+			a.openToolbar(true)
+			a.bar.ask = true
+		})
+	}()
+}
+
+// dataText is a byte count for people: "820 KB", "12.3 MB", "1.04 GB".
+func dataText(n int64) string {
+	switch {
+	case n < 1e6:
+		return fmt.Sprintf("%.0f KB", float64(n)/1e3)
+	case n < 1e9:
+		return fmt.Sprintf("%.1f MB", float64(n)/1e6)
+	}
+	return fmt.Sprintf("%.2f GB", float64(n)/1e9)
 }
 
 // followColor converts the picture the way the stream's SPS says it was
