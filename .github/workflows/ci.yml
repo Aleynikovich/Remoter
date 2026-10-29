@@ -28,6 +28,9 @@ jobs:
       # no GPU, so the hardware test skips).
       - if: runner.os == 'Windows'
         run: go test -v -run Encoder ./internal/mf
+      # Shows how pointer moves land and whether windows get hover events.
+      - if: runner.os == 'Windows'
+        run: go test -v -run 'TestPointer|TestHover' ./internal/input
       - if: runner.os == 'Windows'
         name: Background launch smoke test
         shell: pwsh
