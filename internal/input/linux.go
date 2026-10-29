@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
@@ -30,38 +31,68 @@ type device interface {
 }
 
 func newNative(display image.Rectangle) (Handler, error) {
-	var dev device
-	var err error
-	if wayland.Available() {
-		dev, err = newWaylandDevice(display)
-	} else if os.Getenv("DISPLAY") != "" {
-		dev, err = newX11Device()
-	} else {
-		err = errors.New("no Wayland compositor with virtual input, and no X11 display")
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &linux{
-		dev:     dev,
+	l := &linux{
 		display: display,
 		keys:    make(map[string]map[uint32]bool),
 		buttons: make(map[string]map[int]bool),
-	}, nil
+	}
+	// A user service often starts before the compositor does, so a missing
+	// session is not final: open the devices again on later input.
+	l.open()
+	return l, nil
+}
+
+func openDevice(display image.Rectangle) (device, error) {
+	if wayland.Available() {
+		return newWaylandDevice(display)
+	}
+	if os.Getenv("DISPLAY") != "" {
+		return newX11Device()
+	}
+	return nil, errors.New("no Wayland compositor with virtual input, and no X11 display")
 }
 
 type linux struct {
+	mu      sync.Mutex
 	dev     device
 	display image.Rectangle
+	tried   time.Time
+	lastErr string
 
-	mu      sync.Mutex
 	keys    map[string]map[uint32]bool
 	buttons map[string]map[int]bool
+}
+
+// open creates the device if there is none yet, at most every few seconds.
+func (l *linux) open() error {
+	if l.dev != nil {
+		return nil
+	}
+	if time.Since(l.tried) < 3*time.Second {
+		return errors.New(l.lastErr)
+	}
+	l.tried = time.Now()
+	dev, err := openDevice(l.display)
+	if err != nil {
+		if err.Error() != l.lastErr {
+			log.Printf("input: remote control not ready, trying again on the next input: %v", err)
+		}
+		l.lastErr = err.Error()
+		return err
+	}
+	if l.lastErr != "" {
+		log.Print("input: remote control ready")
+	}
+	l.dev, l.lastErr = dev, ""
+	return nil
 }
 
 func (l *linux) HandleInput(viewer string, in protocol.Input) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.open() != nil {
+		return
+	}
 	if l.display.Empty() {
 		l.display = l.dev.bounds()
 		if l.display.Empty() {
@@ -101,6 +132,11 @@ func (l *linux) HandleInput(viewer string, in protocol.Input) {
 func (l *linux) ReleaseAll(viewer string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.dev == nil {
+		delete(l.keys, viewer)
+		delete(l.buttons, viewer)
+		return
+	}
 	for k := range l.keys[viewer] {
 		l.dev.key(k, false)
 	}
@@ -115,7 +151,9 @@ func (l *linux) SetDisplay(display image.Rectangle) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.display = display
-	l.dev.setDisplay(display)
+	if l.dev != nil {
+		l.dev.setDisplay(display)
+	}
 }
 
 func setHeld[T comparable](held map[string]map[T]bool, viewer string, v T, down bool) {
