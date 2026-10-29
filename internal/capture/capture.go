@@ -24,6 +24,10 @@ type Source interface {
 // uses a faster platform-specific capturer where there is one and falls
 // back to a generic one.
 type Screen struct {
+	// Overlay, if set, draws on each capture (the mouse pointer). origin
+	// is where the image's top-left pixel is on the desktop.
+	Overlay func(img image.Image, origin image.Point) image.Image
+
 	mu      sync.Mutex
 	display int
 	native  nativeSource
@@ -79,7 +83,16 @@ func (s *Screen) closeLocked() {
 // Capture grabs the whole display.
 func (s *Screen) Capture() (image.Image, error) {
 	img, _, err := s.capture(-1)
-	return img, err
+	if err != nil || s.Overlay == nil {
+		return img, err
+	}
+	origin := img.Bounds().Min
+	s.mu.Lock()
+	if s.display == All && s.all != nil {
+		origin = s.all.union.Min
+	}
+	s.mu.Unlock()
+	return s.Overlay(img, origin), nil
 }
 
 // capture grabs the display. A capturer that can tell waits up to wait for

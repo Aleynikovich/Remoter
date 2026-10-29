@@ -91,7 +91,6 @@ type key struct {
 type windows struct {
 	display image.Rectangle
 	checked bool // logged where the first move landed
-	pointer pointer
 
 	mu      sync.Mutex
 	keys    map[string]map[key]bool // held keys per viewer
@@ -122,18 +121,18 @@ func (w *windows) HandleInput(viewer string, in protocol.Input) {
 	defer w.mu.Unlock()
 	switch in.Kind {
 	case "mousemove":
-		w.move(in.X, in.Y, false)
+		w.move(in.X, in.Y)
 	case "mousedown", "mouseup":
 		down := in.Kind == "mousedown"
 		flag := buttonFlag(in.Button, down)
 		if flag == 0 {
 			return
 		}
-		w.move(in.X, in.Y, true)
+		w.move(in.X, in.Y)
 		sendMouse(0, 0, 0, flag)
 		setHeld(w.buttons, viewer, in.Button, down)
 	case "wheel":
-		w.move(in.X, in.Y, false)
+		w.move(in.X, in.Y)
 		// Browsers report pixels (about 100 per notch) with down positive;
 		// Windows wants 120 per notch with up positive.
 		amount := int32(-in.DeltaY * wheelDelta / 100)
@@ -173,9 +172,9 @@ func (w *windows) SetDisplay(display image.Rectangle) {
 	w.mu.Unlock()
 }
 
-func (w *windows) move(x, y float64, exact bool) {
+func (w *windows) move(x, y float64) {
 	p := toScreen(w.display, x, y)
-	w.pointer.move(p, exact)
+	moveTo(p)
 	if !w.checked {
 		w.checked = true
 		got, _ := cursorPos()

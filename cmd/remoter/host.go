@@ -42,6 +42,9 @@ type hostOptions struct {
 
 func newAgent(o hostOptions) *host.Agent {
 	screen := capture.NewScreen(o.display)
+	// Viewers draw their own pointer for speed; this one shows where the
+	// real pointer is.
+	screen.Overlay = cursor.Draw
 	if runtime.GOOS == "windows" && !o.test {
 		go func() {
 			if err := childSelfTest("-capture-selftest"); err != nil {
