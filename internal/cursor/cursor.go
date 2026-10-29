@@ -16,6 +16,13 @@ func Shape() string {
 // top-left pixel sits on the desktop. When the pointer is hidden or not
 // on img, or where this is not supported, it returns img itself;
 // otherwise a copy, so the capturer's own buffers stay clean.
-func Draw(img image.Image, origin image.Point) image.Image {
+func Draw(img image.Image, origin image.Point) (out image.Image) {
+	// A crash here would cut the PC off until someone restarts Remoter,
+	// so a bad pointer picture only costs the pointer.
+	defer func() {
+		if recover() != nil {
+			out = img
+		}
+	}()
 	return draw(img, origin)
 }
