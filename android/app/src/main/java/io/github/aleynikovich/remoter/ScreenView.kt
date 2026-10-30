@@ -77,6 +77,7 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
     private val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val longPressMs = 450L
     private val tapMs = 280L
+    private val doubleTapMs = 300L
 
     init {
         isFocusable = true
@@ -286,6 +287,25 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
     private var wheelAcc = 0f
     private var buttonHeld = false
 
+    // Trackpad taps click a moment late: if the finger comes back down
+    // within doubleTapMs, that touch decides. Dragging or holding then presses
+    // the button without the click in front of it, which Windows would read
+    // as a double click (a title bar would maximize instead of moving).
+    private var clickOwed = false
+    private val owedClick = Runnable { payClick() }
+
+    private fun payClick() {
+        removeCallbacks(owedClick)
+        if (!clickOwed) return
+        clickOwed = false
+        click(0)
+    }
+
+    private fun forgiveClick() {
+        removeCallbacks(owedClick)
+        clickOwed = false
+    }
+
     private val longPress = Runnable {
         if (g != G.PENDING) return@Runnable
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -294,6 +314,7 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
             click(2)
             g = G.DONE
         } else {
+            forgiveClick()
             press(true)
             g = G.HOLD
         }
@@ -327,13 +348,15 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
                 lastX = e.x; lastY = e.y
                 downTime = now
                 lastMoveTime = now
-                tapAgain = mode == Mode.TRACKPAD && now - lastTapTime < 300 &&
+                tapAgain = mode == Mode.TRACKPAD && now - lastTapTime < doubleTapMs &&
                     hypot(e.x - lastTapX, e.y - lastTapY) < 60 * density
+                if (tapAgain) removeCallbacks(owedClick) else payClick()
                 postDelayed(longPress, longPressMs)
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
                 removeCallbacks(longPress)
+                payClick()
                 if (g == G.DRAG || g == G.HOLD) press(false)
                 if (e.pointerCount == 2 && g in setOf(G.PENDING, G.DRAG, G.MOVE, G.HOLD, G.IDLE)) {
                     g = G.TWO
@@ -396,8 +419,19 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
                             }
                             lastTapCx = curX; lastTapCy = curY
                         }
-                        click(0)
-                        lastTapTime = now
+                        if (mode == Mode.TOUCH) {
+                            click(0)
+                            lastTapTime = now
+                        } else if (tapAgain && clickOwed) {
+                            // Second tap: both clicks now, a double click.
+                            payClick()
+                            click(0)
+                            lastTapTime = 0L
+                        } else {
+                            clickOwed = true
+                            postDelayed(owedClick, doubleTapMs)
+                            lastTapTime = now
+                        }
                         lastTapX = e.x; lastTapY = e.y
                     }
                     G.DRAG -> {
@@ -412,6 +446,7 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
 
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
+                payClick()
                 press(false)
                 g = G.IDLE
             }
@@ -430,7 +465,10 @@ class ScreenView(context: Context, private val remote: Remote) : FrameLayout(con
                     g = G.DRAG
                     pointTo(contentX(e.x), contentY(e.y))
                 } else {
-                    if (tapAgain) press(true)
+                    if (tapAgain) {
+                        forgiveClick()
+                        press(true)
+                    }
                     g = if (tapAgain) G.HOLD else G.MOVE
                     relative(e, now)
                 }
