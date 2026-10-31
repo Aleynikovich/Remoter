@@ -58,17 +58,31 @@ type Checker struct {
 	Current string // this binary's tag
 	Asset   string // release file to look for
 	API     string // releases endpoint; defaults to GitHub's for Repo
-	Client  *http.Client
+	// Download is where release files are, as Download/<tag>/<asset>;
+	// defaults to GitHub's for Repo.
+	Download string
+	Client   *http.Client
 
 	etag   string
 	cached *Release
+	// GitHub allows 60 API calls an hour per address without a login, and
+	// every Remoter at home shares one address. Once that runs out, files
+	// are looked for directly until the limit resets.
+	limitedUntil time.Time
 }
+
+// probeMisses is how many missing build numbers in a row end a direct look
+// for newer builds. Numbers go missing when a build fails.
+const probeMisses = 6
 
 // Latest returns the newest release that carries c.Asset, or nil when this
 // binary is already the newest. Releases without the asset (builds from
 // branches that predate the single binary) are skipped, so they can never
 // replace an updating binary with one that cannot update.
 func (c *Checker) Latest(ctx context.Context) (*Release, *Asset, error) {
+	if time.Now().Before(c.limitedUntil) {
+		return c.probe(ctx)
+	}
 	api := c.API
 	if api == "" {
 		api = "https://api.github.com/repos/" + Repo + "/releases?per_page=100"
@@ -114,6 +128,12 @@ func (c *Checker) Latest(ctx context.Context) (*Release, *Asset, error) {
 			}
 		}
 		c.etag, c.cached = resp.Header.Get("ETag"), newest
+	case http.StatusForbidden, http.StatusTooManyRequests:
+		c.limitedUntil = time.Now().Add(time.Hour)
+		if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+			c.limitedUntil = time.Unix(reset, 0)
+		}
+		return c.probe(ctx)
 	default:
 		return nil, nil, fmt.Errorf("releases: %s", resp.Status)
 	}
@@ -121,6 +141,54 @@ func (c *Checker) Latest(ctx context.Context) (*Release, *Asset, error) {
 		return nil, nil, nil
 	}
 	return newest, newest.asset(c.Asset), nil
+}
+
+// probe looks for newer builds of this series without GitHub's API: it asks
+// for the release file of each next build number, which is not rate
+// limited, and returns the highest one there.
+func (c *Checker) probe(ctx context.Context) (*Release, *Asset, error) {
+	series, n, ok := buildNumber(c.Current)
+	if !ok {
+		return nil, nil, errors.New("releases: GitHub API limit reached")
+	}
+	base := c.Download
+	if base == "" {
+		base = "https://github.com/" + Repo + "/releases/download"
+	}
+	client := http.DefaultClient
+	if c.Client != nil {
+		client = c.Client
+	}
+	// A file that exists answers with a redirect to where it is stored;
+	// that is enough to know, so do not follow it.
+	noFollow := *client
+	noFollow.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	var found *Release
+	for k, misses := n+1, 0; misses < probeMisses; k++ {
+		tag := series + strconv.Itoa(k)
+		url := base + "/" + tag + "/" + c.Asset
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp, err := noFollow.Do(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusOK || resp.StatusCode/100 == 3:
+			found, misses = &Release{Tag: tag, Assets: []Asset{{Name: c.Asset, URL: url}}}, 0
+		case resp.StatusCode == http.StatusNotFound:
+			misses++
+		default:
+			return nil, nil, fmt.Errorf("releases: %s (and %s for %s)", "GitHub API limit reached", resp.Status, tag)
+		}
+	}
+	if found == nil {
+		return nil, nil, nil
+	}
+	return found, &found.Assets[0], nil
 }
 
 func (r *Release) asset(name string) *Asset {

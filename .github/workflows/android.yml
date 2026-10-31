@@ -46,8 +46,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD: android-dev-${{ github.run_number }}
         run: |
+          # The app reads this when GitHub's API is rate limited.
+          echo "${{ github.run_number }}" > dist/android-version.txt
           gh release delete android-latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
-          gh release create android-latest dist/remoter-android.apk \
+          gh release create android-latest dist/remoter-android.apk dist/android-version.txt \
             --repo "$GITHUB_REPOSITORY" \
             --prerelease \
             --target "$GITHUB_SHA" \

@@ -23,6 +23,9 @@ object Updater {
     private const val API = "https://api.github.com/repos/aleynikovich/remoter/releases/tags/$TAG"
     const val DOWNLOAD = "https://github.com/aleynikovich/remoter/releases/download/$TAG/$ASSET"
 
+    /** The build number of the APK, readable without GitHub's API (60 calls an hour per home network). */
+    private const val VERSION_FILE = "https://github.com/aleynikovich/remoter/releases/download/$TAG/android-version.txt"
+
     class Update(val build: Int, val name: String, val url: String, val size: Long)
 
     /** Returns a newer build than [current], or null. Blocking; call off the main thread. */
@@ -32,7 +35,7 @@ object Updater {
         conn.readTimeout = 8000
         conn.setRequestProperty("Accept", "application/vnd.github+json")
         try {
-            if (conn.responseCode != 200) return null
+            if (conn.responseCode != 200) return checkWithoutApi(current)
             val release = JSONObject(conn.inputStream.bufferedReader().readText())
             val name = release.optString("name")
             val build = Regex("android-dev-(\\d+)").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: return null
@@ -44,6 +47,20 @@ object Updater {
                 }
             }
             return null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Reads the build number from the release's version file instead of the API. */
+    private fun checkWithoutApi(current: Int): Update? {
+        val conn = URL(VERSION_FILE).openConnection() as HttpURLConnection
+        conn.connectTimeout = 8000
+        conn.readTimeout = 8000
+        try {
+            if (conn.responseCode != 200) return null
+            val build = conn.inputStream.bufferedReader().readText().trim().toIntOrNull() ?: return null
+            return if (build > current) Update(build, "android-dev-$build", DOWNLOAD, -1) else null
         } finally {
             conn.disconnect()
         }
