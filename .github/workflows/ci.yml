@@ -51,6 +51,10 @@ jobs:
             if (Test-Path $log) { "--- $log"; Get-Content -Tail 40 $log }
           }
           ./svc/remoter.exe -uninstall-service
+          # Stopping the service also stops the host it started.
+          Start-Sleep 1
+          $left = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'remoter.exe' -and $_.ExecutablePath -like '*\svc\remoter.exe' }
+          if ($left) { $left | Format-Table ProcessId, CommandLine; "host left running after the service stopped"; exit 1 }
           exit $code
       - if: runner.os == 'Windows'
         name: Background launch smoke test

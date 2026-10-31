@@ -55,15 +55,26 @@ func (remoterService) Execute(args []string, req <-chan svc.ChangeRequest, statu
 	status <- svc.Status{State: svc.StartPending}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go supervise(ctx)
+	done := make(chan struct{})
+	go func() {
+		supervise(ctx)
+		close(done)
+	}()
 	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	for c := range req {
 		switch c.Cmd {
 		case svc.Interrogate:
 			status <- c.CurrentStatus
 		case svc.Stop, svc.Shutdown:
-			status <- svc.Status{State: svc.StopPending}
+			status <- svc.Status{State: svc.StopPending, WaitHint: 5000}
 			cancel()
+			// Wait for the host to be stopped too: returning ends this
+			// process, and the host it started would keep running without
+			// a service to look after it.
+			select {
+			case <-done:
+			case <-time.After(4 * time.Second):
+			}
 			return false, 0
 		}
 	}
