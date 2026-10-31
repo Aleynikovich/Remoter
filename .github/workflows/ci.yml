@@ -16,5 +16,59 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./...
+      # Shows whether the real OpenH264 codec loaded and encoded (it skips
+      # when the library is unavailable).
+      - run: go test -v -run TestEncode ./internal/h264
       - if: runner.os == 'Linux'
         run: go test -race ./...
+      # Shows whether desktop duplication or GDI captured the runner's screen.
+      - if: runner.os == 'Windows'
+        run: go test -v -run TestScreen ./internal/capture
+      # Shows which Media Foundation H.264 encoders the runner has (it has
+      # no GPU, so the hardware test skips).
+      - if: runner.os == 'Windows'
+        run: go test -v -run Encoder ./internal/mf
+      # Shows how pointer moves land and whether windows get hover events.
+      - if: runner.os == 'Windows'
+        run: go test -v -run 'TestPointer|TestHover' ./internal/input
+      # The boot service's host runs as the system account; check that the
+      # pointer moves it injects still make other programs' windows hover.
+      - if: runner.os == 'Windows'
+        name: Hover through the boot service
+        shell: pwsh
+        run: |
+          go build -o svc\remoter.exe ./cmd/remoter
+          ./svc/remoter.exe -install-service
+          $ok = $false
+          foreach ($i in 1..30) {
+            try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/version | Out-Null; $ok = $true; break } catch { Start-Sleep 1 }
+          }
+          if (-not $ok) { "service host never answered" }
+          $env:REMOTER_E2E_ADDR = "127.0.0.1:8080"
+          go test -v -count=1 -run TestHoverThroughService ./internal/input
+          $code = $LASTEXITCODE
+          foreach ($log in "C:\Windows\System32\config\systemprofile\AppData\Local\Remoter\remoter.log", "C:\Windows\Temp\remoter.log", "C:\Windows\SystemTemp\remoter.log") {
+            if (Test-Path $log) { "--- $log"; Get-Content -Tail 40 $log }
+          }
+          ./svc/remoter.exe -uninstall-service
+          exit $code
+      - if: runner.os == 'Windows'
+        name: Background launch smoke test
+        shell: pwsh
+        run: |
+          go build -o remoter.exe ./cmd/remoter
+          "" | ./remoter.exe -test-pattern -addr :18080
+          (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18080/version).Content
+          "" | ./remoter.exe -test-pattern -addr :18080 | Select-String "already running"
+          if (-not $?) { exit 1 }
+          ./remoter.exe -stop -addr :18080
+          Start-Sleep 1
+          try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18080/version; exit 1 } catch { "stopped" }
+      - if: runner.os == 'Windows'
+        name: Desktop viewer self-test
+        shell: pwsh
+        run: |
+          go build -o remoter-viewer.exe ./cmd/remoter-viewer
+          $out = ./remoter-viewer.exe -selftest | Out-String
+          $out
+          if ($out.Trim() -ne "ok") { exit 1 }

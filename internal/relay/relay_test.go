@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
 	"image/jpeg"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/aleynikovich/remoter/internal/host"
 	"github.com/aleynikovich/remoter/internal/protocol"
 	"github.com/aleynikovich/remoter/internal/relay"
+	"github.com/aleynikovich/remoter/internal/stream"
 )
 
 type inputRecorder chan protocol.Input
@@ -27,9 +30,40 @@ type releaseRecorder chan string
 func (r releaseRecorder) HandleInput(string, protocol.Input) {}
 func (r releaseRecorder) ReleaseAll(viewer string)           { r <- viewer }
 
+// fakeClipboard is an in-memory clipboard.
+type fakeClipboard struct {
+	mu   sync.Mutex
+	seq  uint32
+	text string
+}
+
+func (c *fakeClipboard) Seq() uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seq
+}
+
+func (c *fakeClipboard) ReadText() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.text, nil
+}
+
+func (c *fakeClipboard) WriteText(s string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seq++
+	c.text = s
+	return nil
+}
+
 // startHost runs a relay and a host agent and returns the relay's ws URL and
 // the host's session ID.
 func startHost(t *testing.T, password string, input host.InputHandler) (string, string) {
+	return startHostWith(t, &host.Agent{Password: password, Input: input})
+}
+
+func startHostWith(t *testing.T, a *host.Agent) (string, string) {
 	t.Helper()
 	srv := httptest.NewServer(relay.New().Handler())
 	t.Cleanup(srv.Close)
@@ -38,14 +72,10 @@ func startHost(t *testing.T, password string, input host.InputHandler) (string, 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ids := make(chan string, 1)
-	a := &host.Agent{
-		ServerURL:    base + "/ws/host",
-		Password:     password,
-		Source:       capture.TestPattern{Width: 64, Height: 48},
-		Input:        input,
-		FPS:          30,
-		OnRegistered: func(id string) { ids <- id },
-	}
+	a.ServerURL = base + "/ws/host"
+	a.Source = capture.TestPattern{Width: 64, Height: 48}
+	a.FPS = 30
+	a.OnRegistered = func(id string) { ids <- id }
 	go a.Run(ctx)
 	select {
 	case id := <-ids:
@@ -95,19 +125,17 @@ func TestViewerReceivesFramesAndSendsInput(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	typ, frame, err := c.Read(ctx)
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+	u := readUpdate(t, c)
+	if !u.Full() || u.Width != 64 || u.Height != 48 {
+		t.Fatalf("first update is %dx%d full=%v, want the whole 64x48 screen", u.Width, u.Height, u.Full())
+	}
+	img, err := jpeg.Decode(bytes.NewReader(u.Rects[0].JPEG))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("rect is not a JPEG: %v", err)
 	}
-	if typ != websocket.MessageBinary {
-		t.Fatalf("got message type %v, want binary frame", typ)
-	}
-	img, err := jpeg.Decode(bytes.NewReader(frame))
-	if err != nil {
-		t.Fatalf("frame is not a JPEG: %v", err)
-	}
-	if b := img.Bounds(); b.Dx() != 64 || b.Dy() != 48 {
-		t.Fatalf("frame size %v, want 64x48", b)
+	if b := img.Bounds(); b.Dx() != u.Rects[0].Dx() || b.Dy() != u.Rects[0].Dy() {
+		t.Fatalf("rect %v holds a %v image", u.Rects[0].Rectangle, b)
 	}
 
 	msg, _ := json.Marshal(protocol.Message{Type: protocol.TypeInput, Input: &protocol.Input{Kind: "mousedown", X: 0.5, Y: 0.25}})
@@ -124,11 +152,301 @@ func TestViewerReceivesFramesAndSendsInput(t *testing.T) {
 	}
 }
 
+func sendJSON(t *testing.T, c *websocket.Conn, m protocol.Message) {
+	t.Helper()
+	data, _ := json.Marshal(m)
+	if err := c.Write(context.Background(), websocket.MessageText, data); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readUpdate(t *testing.T, c *websocket.Conn) *stream.Update {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var data []byte
+	for {
+		typ, d, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ == websocket.MessageBinary {
+			data = d
+			break
+		}
+	}
+	u, err := stream.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+func TestHostWaitsForAcks(t *testing.T) {
+	base, id := startHost(t, "secret", nil)
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+
+	const window = 5 // as in package host
+	for range window {
+		readUpdate(t, c)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	_, _, err := c.Read(ctx)
+	cancel()
+	if err == nil {
+		t.Fatalf("host sent update %d without an ack", window+1)
+	}
+	// The timed-out read closed the connection, so reconnect to check
+	// that acks let updates through again.
+	c, _ = dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+	for range 10 {
+		u := readUpdate(t, c)
+		sendJSON(t, c, protocol.Message{Type: protocol.TypeAck, Seq: u.Seq})
+	}
+}
+
+func TestClipboardIsSharedBothWays(t *testing.T) {
+	clip := &fakeClipboard{}
+	base, id := startHostWith(t, &host.Agent{Password: "secret", Clipboard: clip})
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeClipboard, Text: "from viewer"})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if text, _ := clip.ReadText(); text == "from viewer" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("host clipboard was not set")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	clip.WriteText("from host")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		typ, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal("viewer did not get the host clipboard:", err)
+		}
+		if typ != websocket.MessageText {
+			continue // screen update
+		}
+		var m protocol.Message
+		json.Unmarshal(data, &m)
+		if m.Type != protocol.TypeClipboard {
+			continue
+		}
+		if m.Text != "from host" {
+			t.Fatalf("viewer got clipboard %q, want the host's (and no echo of its own)", m.Text)
+		}
+		return
+	}
+}
+
+type fakeMonitors struct {
+	mu      sync.Mutex
+	current int
+}
+
+func (m *fakeMonitors) Count() int { return 2 }
+
+func (m *fakeMonitors) Current() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.current
+}
+
+func (m *fakeMonitors) Select(d int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.current = d
+	return nil
+}
+
+// readText returns the next control message of the given type, skipping
+// screen updates and other messages.
+func readText(t *testing.T, c *websocket.Conn, typ string) protocol.Message {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		mt, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("no %s message: %v", typ, err)
+		}
+		var m protocol.Message
+		if mt == websocket.MessageText && json.Unmarshal(data, &m) == nil && m.Type == typ {
+			return m
+		}
+	}
+}
+
+func TestCursorAndDisplaySwitching(t *testing.T) {
+	mons := &fakeMonitors{}
+	base, id := startHostWith(t, &host.Agent{
+		Password: "secret",
+		Cursor:   func() string { return "text" },
+		Monitors: mons,
+	})
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh})
+
+	// The display list (sent on join) and the cursor (sent with the first
+	// update) can arrive in either order.
+	var displays, cursor *protocol.Message
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for displays == nil || cursor == nil {
+		mt, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("displays %v, cursor %v: %v", displays, cursor, err)
+		}
+		var m protocol.Message
+		if mt != websocket.MessageText || json.Unmarshal(data, &m) != nil {
+			continue
+		}
+		switch m.Type {
+		case protocol.TypeDisplays:
+			displays = &m
+		case protocol.TypeCursor:
+			cursor = &m
+		}
+	}
+	if displays.Count != 2 || displays.Display != 0 {
+		t.Fatalf("got %+v, want 2 displays showing the first", displays)
+	}
+	if cursor.Cursor != "text" {
+		t.Fatalf("got cursor %q, want text", cursor.Cursor)
+	}
+
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeSelectDisplay, Display: 1})
+	if m := readText(t, c, protocol.TypeDisplays); m.Display != 1 || mons.Current() != 1 {
+		t.Fatalf("got %+v, want the second display selected", m)
+	}
+}
+
+type fakeVideo struct{ w, h int }
+
+func (v *fakeVideo) Size() (int, int) { return v.w, v.h }
+func (v *fakeVideo) Close()           {}
+func (v *fakeVideo) Encode(_ *image.RGBA, key bool) ([]byte, bool, error) {
+	return []byte{0, 0, 0, 1, 0x65}, key, nil
+}
+
+func TestVideoOnlyForViewersThatDecodeIt(t *testing.T) {
+	base, id := startHostWith(t, &host.Agent{
+		Password: "secret",
+		NewVideo: func(w, h, kbps int) (host.VideoEncoder, error) { return &fakeVideo{w &^ 1, h &^ 1}, nil },
+	})
+	read := func(c *websocket.Conn) []byte {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for {
+			typ, data, err := c.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if typ == websocket.MessageBinary {
+				return data
+			}
+		}
+	}
+
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh, Video: true})
+	v, err := stream.ParseVideo(read(c))
+	if err != nil || !v.Key || v.Width != 64 || v.Height != 48 {
+		t.Fatalf("got %+v, %v; want a 64x48 key frame", v, err)
+	}
+
+	// A viewer without H.264 switches the session to JPEG tiles.
+	c2, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c2, protocol.Message{Type: protocol.TypeRefresh})
+	// Video frames sent before the switch may still arrive first.
+	for {
+		data := read(c2)
+		if data[0] == 'V' {
+			continue
+		}
+		if u, err := stream.Parse(data); err != nil || !u.Full() {
+			t.Fatalf("got %+v, %v; want a full JPEG update", u, err)
+		}
+		break
+	}
+
+	// Viewers are told why video went off. The first viewer may still have
+	// the status from its own refresh, which said video was on, queued.
+	m := readText(t, c, protocol.TypeVideo)
+	if m.Text == "" {
+		m = readText(t, c, protocol.TypeVideo)
+	}
+	if !strings.Contains(m.Text, "cannot decode H.264") {
+		t.Fatalf("video status %q, want why it is off", m.Text)
+	}
+}
+
+func TestDataSaver(t *testing.T) {
+	rates := make(chan int, 16)
+	base, id := startHostWith(t, &host.Agent{
+		Password: "secret",
+		NewVideo: func(w, h, kbps int) (host.VideoEncoder, error) {
+			rates <- kbps
+			return &fakeVideo{w &^ 1, h &^ 1}, nil
+		},
+	})
+	c, _ := dialViewer(t, base, id, "secret")
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh, Video: true})
+	if m := readText(t, c, protocol.TypeDataSaver); m.OK {
+		t.Fatalf("got %+v, want data saver off", m)
+	}
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeDataSaver, OK: true})
+	if m := readText(t, c, protocol.TypeDataSaver); !m.OK {
+		t.Fatalf("got %+v, want data saver on", m)
+	}
+	if m := readText(t, c, protocol.TypeQuality); m.Scale != 50 {
+		t.Fatalf("got %+v, want video at 50%%", m)
+	}
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeRefresh, Video: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		typ, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal("no smaller video frame:", err)
+		}
+		if typ != websocket.MessageBinary {
+			continue
+		}
+		if v, err := stream.ParseVideo(data); err == nil && v.Width == 32 && v.Height == 24 {
+			break
+		}
+	}
+	reopened := false
+	for len(rates) > 0 {
+		reopened = reopened || <-rates == 1000
+	}
+	if !reopened {
+		t.Fatal("video was not reopened at the data saver rate")
+	}
+}
+
 func TestWrongPasswordIsRejected(t *testing.T) {
 	base, id := startHost(t, "secret", nil)
 	_, m := dialViewer(t, base, id, "nope")
 	if m.Type != protocol.TypeError || m.Error != "wrong password" {
 		t.Fatalf("got %+v, want wrong password error", m)
+	}
+}
+
+func TestEmptyIDConnectsToOnlyHost(t *testing.T) {
+	base, _ := startHost(t, "root", nil)
+	if _, m := dialViewer(t, base, "", "root"); m.Type != protocol.TypeConnected {
+		t.Fatalf("got %+v, want connected", m)
 	}
 }
 
@@ -163,5 +481,16 @@ func TestHeldInputReleasedWhenViewerLeaves(t *testing.T) {
 	case <-released:
 	case <-time.After(5 * time.Second):
 		t.Fatal("host did not release input after the viewer left")
+	}
+}
+
+func TestHostKeepsIDAcrossRestart(t *testing.T) {
+	_, id := startHostWith(t, &host.Agent{Password: "pw", ID: "123456789"})
+	if id != "123456789" {
+		t.Fatalf("got ID %s, want the requested one", id)
+	}
+	_, id = startHostWith(t, &host.Agent{Password: "pw", ID: "42"})
+	if len(id) != 9 || id == "42" {
+		t.Fatalf("invalid requested ID accepted: %s", id)
 	}
 }

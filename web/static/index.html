@@ -9,10 +9,11 @@
 <body>
 <main id="connect-view">
   <h1>Remoter</h1>
-  <p>Enter the ID and password shown on the remote computer.</p>
+  <p>Enter the password of the remote computer.</p>
   <form id="connect-form">
-    <label>Partner ID <input id="id" inputmode="numeric" autocomplete="off" placeholder="123 456 789" required></label>
-    <label>Password <input id="password" type="password" autocomplete="off" required></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required autofocus></label>
+    <label>Partner ID <span class="hint">only needed if several computers are shared</span>
+      <input id="id" inputmode="numeric" autocomplete="off" placeholder="optional"></label>
     <button type="submit">Connect</button>
     <p id="status" role="status"></p>
   </form>
@@ -20,9 +21,54 @@
 <div id="session-view" hidden>
   <header>
     <span id="session-label"></span>
+    <span id="stats"></span>
+    <span id="build" title="Remoter build running on the remote computer"></span>
+    <span id="notice" role="status"></span>
+    <select id="display" title="Display" hidden></select>
+    <select id="quality" title="Resolution: Auto picks the sharpest picture the remote computer can encode at 60 fps">
+      <option value="auto">Auto</option>
+      <option value="100">100%</option>
+      <option value="90">90%</option>
+      <option value="80">80%</option>
+      <option value="70">70%</option>
+      <option value="60">60%</option>
+      <option value="50">50%</option>
+      <option value="40">40%</option>
+    </select>
+    <button id="saver" class="secondary" title="Data saver: at most 15 fps and half resolution, for metered connections">Data saver: off</button>
+    <span id="saver-ask" hidden>You're on a metered connection. Switch to data saver?
+      <button id="saver-yes">Switch</button>
+      <button id="saver-always" class="secondary">Always on metered</button>
+      <button id="saver-no" class="secondary">Not now</button></span>
+    <button id="real-pointer" class="secondary" title="Draw the computer's real mouse pointer into the picture">Real pointer: off</button>
+    <select id="keys" title="Send a key combination">
+      <option value="">Send keys…</option>
+      <option value="MetaLeft">Windows key</option>
+      <option value="MetaLeft+KeyR">Win+R (Run)</option>
+      <option value="MetaLeft+KeyD">Win+D (Desktop)</option>
+      <option value="MetaLeft+KeyE">Win+E (Explorer)</option>
+      <option value="AltLeft+Tab">Alt+Tab</option>
+      <option value="AltLeft+F4">Alt+F4</option>
+      <option value="ControlLeft+ShiftLeft+Escape">Ctrl+Shift+Esc (Task Manager)</option>
+      <option value="ControlLeft+KeyW">Ctrl+W</option>
+      <option value="ControlLeft+KeyT">Ctrl+T</option>
+      <option value="ControlLeft+KeyN">Ctrl+N</option>
+    </select>
+    <button id="scale" class="secondary" title="Switch between fit to window and actual size">1:1</button>
+    <button id="fullscreen" class="secondary">Full screen</button>
+    <button id="diag" class="secondary" title="Collect logs and timings from both ends">Diagnostics</button>
     <button id="disconnect">Disconnect</button>
   </header>
-  <canvas id="screen" tabindex="0"></canvas>
+  <dialog id="diag-dialog">
+    <p>Diagnostics from this viewer and the remote computer. Copy them and paste them into the chat.</p>
+    <textarea id="diag-text" readonly rows="20" cols="100"></textarea>
+    <div class="diag-buttons">
+      <button id="diag-link" class="secondary">Test link</button>
+      <button id="diag-copy">Copy</button>
+      <button id="diag-close" class="secondary">Close</button>
+    </div>
+  </dialog>
+  <div id="screen-wrap"><canvas id="screen" tabindex="0"></canvas></div>
 </div>
 <script src="viewer.js"></script>
 </body>

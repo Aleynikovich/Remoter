@@ -31,10 +31,14 @@ const (
 	// maxFailures wrong passwords for one ID lock that ID for lockout.
 	maxFailures = 5
 	lockout     = time.Minute
-	// frameBuffer is how many frames may queue per viewer before old ones are
-	// dropped. Dropping keeps a slow viewer from stalling the host.
-	frameBuffer = 2
+	// frameBuffer is how many screen updates may queue per viewer. Updates
+	// only carry what changed, so none may be dropped; the host waits for acks
+	// to stay within this, and a viewer that overflows it is disconnected
+	// rather than allowed to stall the host.
+	frameBuffer = 16
 	maxMessage  = 16 << 20
+	// maxViewerMessage leaves room for clipboard text.
+	maxViewerMessage = 1 << 20
 )
 
 // Server is the relay. The zero value is not usable; call New.
@@ -60,9 +64,15 @@ type host struct {
 }
 
 type viewer struct {
-	id     string
-	conn   *websocket.Conn
-	frames chan []byte
+	id      string
+	conn    *websocket.Conn
+	out     chan outgoing
+	tooSlow bool // guarded by host.mu
+}
+
+type outgoing struct {
+	typ  websocket.MessageType
+	data []byte
 }
 
 // New returns an empty relay server.
@@ -102,7 +112,7 @@ func (s *Server) serveHost(w http.ResponseWriter, r *http.Request) {
 		viewers: make(map[string]*viewer),
 		pending: make(map[string]chan bool),
 	}
-	if err := s.addHost(h); err != nil {
+	if err := s.addHost(h, reg.ID); err != nil {
 		conn.Close(websocket.StatusInternalError, err.Error())
 		return
 	}
@@ -120,14 +130,19 @@ func (s *Server) serveHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if typ == websocket.MessageBinary {
-			h.broadcast(data)
+			h.broadcast(outgoing{typ, data})
 			continue
 		}
 		var m protocol.Message
 		if json.Unmarshal(data, &m) != nil {
 			continue
 		}
-		if m.Type == protocol.TypeAuthResult {
+		switch {
+		case protocol.ToViewers(m.Type):
+			m.Viewer, m.Password = "", ""
+			out, _ := json.Marshal(m)
+			h.broadcast(outgoing{websocket.MessageText, out})
+		case m.Type == protocol.TypeAuthResult:
 			h.mu.Lock()
 			ch := h.pending[m.Viewer]
 			delete(h.pending, m.Viewer)
@@ -144,7 +159,7 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	conn.SetReadLimit(1 << 16)
+	conn.SetReadLimit(maxViewerMessage)
 	defer conn.CloseNow()
 	ctx := r.Context()
 
@@ -159,6 +174,15 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 		conn.Close(websocket.StatusPolicyViolation, msg)
 	}
 
+	if req.ID == "" {
+		// No ID: connect to the only shared computer, if there is one.
+		id, err := s.onlyHost()
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		req.ID = id
+	}
 	if s.locked(req.ID) {
 		fail("too many attempts, try again later")
 		return
@@ -170,9 +194,9 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v := &viewer{
-		id:     strconv.FormatUint(s.nextID.Add(1), 10),
-		conn:   conn,
-		frames: make(chan []byte, frameBuffer),
+		id:   strconv.FormatUint(s.nextID.Add(1), 10),
+		conn: conn,
+		out:  make(chan outgoing, frameBuffer),
 	}
 	ok, err := h.authenticate(ctx, v.id, req.Password)
 	if err != nil {
@@ -204,7 +228,10 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var m protocol.Message
-		if json.Unmarshal(data, &m) != nil || m.Type != protocol.TypeInput || m.Input == nil {
+		if json.Unmarshal(data, &m) != nil || !protocol.FromViewer(m.Type) {
+			continue
+		}
+		if m.Type == protocol.TypeInput && m.Input == nil {
 			continue
 		}
 		m.Viewer = v.id
@@ -214,9 +241,18 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) addHost(h *host) error {
+// addHost gives h a session ID: preferred if it is a free 9-digit ID (a host
+// reconnecting after a restart keeps its ID), otherwise a random one.
+func (s *Server) addHost(h *host, preferred string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if n, err := strconv.Atoi(preferred); err == nil && n >= 100_000_000 && n <= 999_999_999 {
+		if _, taken := s.hosts[preferred]; !taken {
+			h.id = preferred
+			s.hosts[preferred] = h
+			return nil
+		}
+	}
 	for range 100 {
 		n, err := rand.Int(rand.Reader, big.NewInt(900_000_000))
 		if err != nil {
@@ -251,6 +287,21 @@ func (s *Server) host(id string) *host {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hosts[id]
+}
+
+// onlyHost returns the ID of the single connected host.
+func (s *Server) onlyHost() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch len(s.hosts) {
+	case 0:
+		return "", errors.New("no computer is being shared on this server")
+	case 1:
+		for id := range s.hosts {
+			return id, nil
+		}
+	}
+	return "", errors.New("several computers are shared here, enter the partner ID")
 }
 
 func (s *Server) locked(id string) bool {
@@ -328,23 +379,21 @@ func (h *host) removeViewer(v *viewer) {
 	}
 }
 
-// broadcast queues a frame for every viewer, dropping the oldest queued frame
-// for viewers that are falling behind.
-func (h *host) broadcast(frame []byte) {
+// broadcast queues a message for every viewer. A viewer whose queue is full
+// has stopped keeping up and is disconnected.
+func (h *host) broadcast(msg outgoing) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, v := range h.viewers {
-		for {
-			select {
-			case v.frames <- frame:
-			default:
-				select {
-				case <-v.frames:
-				default:
-				}
-				continue
-			}
-			break
+		if v.tooSlow {
+			continue
+		}
+		select {
+		case v.out <- msg:
+		default:
+			v.tooSlow = true
+			log.Printf("viewer %s of host %s is too slow, disconnecting", v.id, h.id)
+			go v.conn.Close(websocket.StatusTryAgainLater, "connection too slow")
 		}
 	}
 }
@@ -352,8 +401,8 @@ func (h *host) broadcast(frame []byte) {
 func (v *viewer) pump(ctx context.Context) {
 	for {
 		select {
-		case f := <-v.frames:
-			if err := v.conn.Write(ctx, websocket.MessageBinary, f); err != nil {
+		case m := <-v.out:
+			if err := v.conn.Write(ctx, m.typ, m.data); err != nil {
 				return
 			}
 		case <-ctx.Done():

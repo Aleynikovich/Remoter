@@ -14,6 +14,9 @@ type Handler interface {
 	// ReleaseAll lets go of every key and button a viewer still holds, so a
 	// dropped connection cannot leave Ctrl or the mouse button stuck down.
 	ReleaseAll(viewer string)
+	// SetDisplay moves input to another screen area, after the viewer
+	// switches monitors.
+	SetDisplay(display image.Rectangle)
 }
 
 // New returns the native injector for this platform, applying events to the
@@ -31,6 +34,8 @@ func (Log) HandleInput(viewer string, in protocol.Input) {
 }
 
 func (Log) ReleaseAll(string) {}
+
+func (Log) SetDisplay(image.Rectangle) {}
 
 // toScreen maps normalised 0..1 coordinates to a pixel inside display.
 func toScreen(display image.Rectangle, x, y float64) image.Point {

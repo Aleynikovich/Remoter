@@ -20,6 +20,10 @@ var (
 	procGetSystemMetrics          = user32.NewProc("GetSystemMetrics")
 	procSetProcessDpiAwarenessCtx = user32.NewProc("SetProcessDpiAwarenessContext")
 	procSetProcessDPIAware        = user32.NewProc("SetProcessDPIAware")
+	procSetCursorPos              = user32.NewProc("SetCursorPos")
+	procGetCursorPos              = user32.NewProc("GetCursorPos")
+	procGetThreadDpiAwarenessCtx  = user32.NewProc("GetThreadDpiAwarenessContext")
+	procGetAwarenessFromDpiCtx    = user32.NewProc("GetAwarenessFromDpiAwarenessContext")
 )
 
 const (
@@ -86,6 +90,7 @@ type key struct {
 
 type windows struct {
 	display image.Rectangle
+	checked bool // logged where the first move landed
 
 	mu      sync.Mutex
 	keys    map[string]map[key]bool // held keys per viewer
@@ -160,17 +165,43 @@ func (w *windows) ReleaseAll(viewer string) {
 	delete(w.buttons, viewer)
 }
 
+func (w *windows) SetDisplay(display image.Rectangle) {
+	w.mu.Lock()
+	w.display = display
+	w.checked = false
+	w.mu.Unlock()
+}
+
 func (w *windows) move(x, y float64) {
 	p := toScreen(w.display, x, y)
-	vx, vy := metric(smXVirtualScreen), metric(smYVirtualScreen)
-	vw, vh := metric(smCXVirtualScreen), metric(smCYVirtualScreen)
-	if vw <= 1 || vh <= 1 {
-		return
+	moveTo(p)
+	if !w.checked {
+		w.checked = true
+		got, _ := cursorPos()
+		log.Printf("input: display %v, virtual screen %d,%d %dx%d, DPI awareness %d, pointer asked at %v and now at %v", w.display,
+			metric(smXVirtualScreen), metric(smYVirtualScreen), metric(smCXVirtualScreen), metric(smCYVirtualScreen),
+			dpiAwareness(), p, got)
 	}
-	// Absolute coordinates span 0..65535 across the whole virtual desktop.
-	nx := int32((int64(p.X-vx)*65535 + int64(vw-1)/2) / int64(vw-1))
-	ny := int32((int64(p.Y-vy)*65535 + int64(vh-1)/2) / int64(vh-1))
-	sendMouse(nx, ny, 0, mouseeventfMove|mouseeventfAbsolute|mouseeventfVirtualDsk)
+}
+
+// dpiAwareness is this thread's DPI awareness: 0 unaware, 1 system, 2 per
+// monitor, -1 unknown.
+func dpiAwareness() int {
+	if procGetThreadDpiAwarenessCtx.Find() != nil || procGetAwarenessFromDpiCtx.Find() != nil {
+		return -1
+	}
+	ctx, _, _ := procGetThreadDpiAwarenessCtx.Call()
+	a, _, _ := procGetAwarenessFromDpiCtx.Call(ctx)
+	return int(int32(a))
+}
+
+// cursorPos is where the pointer is, in physical pixels.
+func cursorPos() (image.Point, bool) {
+	var pt struct{ x, y int32 }
+	if ok, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt))); ok == 0 {
+		return image.Point{}, false
+	}
+	return image.Pt(int(pt.x), int(pt.y)), true
 }
 
 func lookupKey(in protocol.Input) (key, bool) {
