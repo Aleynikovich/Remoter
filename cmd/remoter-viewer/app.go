@@ -598,6 +598,9 @@ func (a *app) drainClient() {
 			if a.saver {
 				a.client.Send(protocol.Message{Type: protocol.TypeDataSaver, OK: true})
 			}
+			if a.cfg.RealPointer {
+				a.client.Send(protocol.Message{Type: protocol.TypeRealPointer, OK: true})
+			}
 			a.checkMetered()
 			a.capture(true)
 			a.syncClipboard()
@@ -1186,6 +1189,23 @@ func (a *app) setQuality(q string) {
 	}
 	a.client.Send(protocol.Message{Type: protocol.TypeQuality, Text: q})
 	a.showNotice("Picture: "+qualityLabel(q)+"  ·  Ctrl+Alt+Q changes it", 3*time.Second)
+}
+
+// setRealPointer asks the host to draw its real pointer into the picture,
+// or stop, and remembers the choice.
+func (a *app) setRealPointer(on bool) {
+	a.cfg.RealPointer = on
+	if a.cfgPath != "" {
+		if err := a.cfg.Save(a.cfgPath); err != nil {
+			log.Printf("saving settings: %v", err)
+		}
+	}
+	a.client.Send(protocol.Message{Type: protocol.TypeRealPointer, OK: on})
+	if on {
+		a.showNotice("The computer's real pointer is drawn into the picture", 3*time.Second)
+	} else {
+		a.showNotice("Real pointer hidden", 2*time.Second)
+	}
 }
 
 // setSaver turns data saver on or off for this session.

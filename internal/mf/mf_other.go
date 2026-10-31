@@ -22,5 +22,8 @@ func (e *Encoder) Encode(img *image.RGBA, key bool) ([]byte, bool, error) {
 	return nil, false, errUnsupported
 }
 
+// SelfTestAt fails: there is no Media Foundation here.
+func SelfTestAt(size image.Point) (string, error) { return "", errUnsupported }
+
 // SelfTest fails: there is no Media Foundation here.
 func SelfTest(sizes ...image.Point) (string, error) { return "", errUnsupported }
