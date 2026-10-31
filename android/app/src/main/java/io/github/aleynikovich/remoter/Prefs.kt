@@ -57,6 +57,11 @@ class Prefs(context: Context) {
         get() = p.getBoolean("saverOnMetered", false)
         set(v) = p.edit().putBoolean("saverOnMetered", v).apply()
 
+    /** Ask the host to draw its real mouse pointer into the picture. */
+    var realPointer: Boolean
+        get() = p.getBoolean("realPointer", false)
+        set(v) = p.edit().putBoolean("realPointer", v).apply()
+
     companion object {
         const val DEFAULT_COMPUTER = "100.102.208.35:8080"
         const val DEFAULT_PASSWORD = "root"

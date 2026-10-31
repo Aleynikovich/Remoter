@@ -613,6 +613,11 @@ func SelfTest(sizes ...image.Point) (string, error) {
 	return selfTest(enumHardware|enumSortAndFilt, sizes)
 }
 
+// SelfTestAt is SelfTest at one size only.
+func SelfTestAt(size image.Point) (string, error) {
+	return selfTestAt(enumHardware|enumSortAndFilt, size.X, size.Y)
+}
+
 func selfTest(flags uintptr, sizes []image.Point) (name string, err error) {
 	for _, size := range append([]image.Point{{1280, 720}}, sizes...) {
 		if name, err = selfTestAt(flags, size.X, size.Y); err != nil {

@@ -24,6 +24,9 @@ type Config struct {
 	// SaverOnMetered turns data saver on by itself on a metered
 	// connection, instead of asking.
 	SaverOnMetered bool `json:"saverOnMetered,omitempty"`
+	// RealPointer asks the host to draw its real mouse pointer into the
+	// picture, next to the viewer's own.
+	RealPointer bool `json:"realPointer,omitempty"`
 }
 
 // PasswordFor is the password to try for server: the one that worked last
