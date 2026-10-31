@@ -76,23 +76,29 @@ object ShareClient {
     }
 
     /**
-     * Finds the devices that receive shares. Android apps cannot read
-     * Tailscale's device list, so it asks every Remoter it knows (saved
-     * computers and earlier targets) for GET /devices, then each online
-     * device for /share/info. Blocking.
+     * Finds the devices that receive shares: those answering on the same
+     * Wi-Fi, and since Android apps cannot read Tailscale's device list, it
+     * also asks every Remoter it knows (saved computers and earlier targets)
+     * for GET /devices, then each online device for /share/info. Blocking.
      */
     fun discover(prefs: Prefs, share: SharePrefs): List<ShareTarget> {
         val pool = Executors.newCachedThreadPool()
         try {
+            val onWifi = pool.submit(Callable { Lan.discover() })
             val known = (prefs.computers.map { it.substringBefore(':') } + share.targets.map { it.ip }).distinct()
             val candidates = LinkedHashSet<String>(known)
             val lists = pool.invokeAll(known.map { ip -> Callable { devices(ip) } }, 10, TimeUnit.SECONDS)
             for (f in lists) {
                 runCatching { f.get() }.getOrNull()?.let { candidates.addAll(it) }
             }
+            // Devices on the same Wi-Fi are reached there, not over Tailscale.
+            val home = runCatching { onWifi.get() }.getOrDefault(emptyList())
+                .filter { it.share && it.ip !in Lan.ownIps() }
             candidates.removeAll(ownAddresses())
+            candidates.removeAll(home.map { it.tailnet }.toSet())
+            candidates.removeAll(home.map { it.ip }.toSet())
             val found = pool.invokeAll(candidates.map { ip -> Callable { info(ip) } }, 6, TimeUnit.SECONDS)
-            return found.mapNotNull { runCatching { it.get() }.getOrNull() }
+            return home.map { ShareTarget(it.name, it.os, it.ip) } + found.mapNotNull { runCatching { it.get() }.getOrNull() }
         } finally {
             pool.shutdownNow()
         }

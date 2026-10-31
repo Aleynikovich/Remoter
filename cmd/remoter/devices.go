@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aleynikovich/remoter/internal/lan"
 	"github.com/aleynikovich/remoter/internal/update"
 )
 
@@ -62,6 +63,16 @@ func fromTailnet(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// fromHome reports whether a request comes over Tailscale, from this
+// computer or from the home network (a private address).
+func fromHome(r *http.Request) bool {
+	if fromTailnet(r) {
+		return true
+	}
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	return err == nil && lan.Local(ap.Addr())
 }
 
 // devicesHandler serves GET /devices: {"devices": [...]}, or 404 when

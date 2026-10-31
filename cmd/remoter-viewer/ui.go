@@ -240,8 +240,8 @@ func noticeImage(text string, s float64) *image.RGBA {
 	return img
 }
 
-// deviceList is the start screen: the computers on the user's Tailscale
-// network, those running Remoter first. The last row opens the form for a
+// deviceList is the start screen: the computers on the user's home and
+// Tailscale networks, those running Remoter first. The last row opens the form for a
 // server address instead.
 type deviceList struct {
 	devices  []viewer.Device
@@ -276,7 +276,7 @@ func (l *deviceList) move(step int) {
 // selectAddr selects the device with this server address, if listed.
 func (l *deviceList) selectAddr(addr string) {
 	for i, d := range l.devices {
-		if d.Addr() == addr && d.Online {
+		if slices.Contains(d.Addrs(), addr) && d.Online {
 			l.selected = i
 			return
 		}
@@ -308,9 +308,9 @@ func (l *deviceList) draw(out image.Point, s float64) *image.RGBA {
 		drawText(img, small, x0+w-textWidth(small, l.version), y, l.version, colMuted)
 	}
 	y += px(30)
-	sub := "Computers on your Tailscale network"
+	sub := "Computers on your home network and Tailscale"
 	if !l.scanned {
-		sub = "Looking for computers on your Tailscale network…"
+		sub = "Looking for computers on your home network and Tailscale…"
 	}
 	drawText(img, small, x0, y, sub, colMuted)
 	y += px(20)
@@ -357,7 +357,7 @@ func (l *deviceList) draw(out image.Point, s float64) *image.RGBA {
 			case d.Online:
 				state = "online"
 			}
-			detail = strings.Join(slices.DeleteFunc([]string{os, d.IP, state}, func(s string) bool { return s == "" }), "  ·  ")
+			detail = strings.Join(slices.DeleteFunc([]string{os, d.Where(), state}, func(s string) bool { return s == "" }), "  ·  ")
 			dim = !d.Online || d.Remoter == "" && d.OS != "android" && l.scanned
 		}
 		c := colText

@@ -90,7 +90,7 @@ class ConnectActivity : Activity() {
         column.addView(list)
 
         val add = EditText(this).apply {
-            hint = "Add a computer: Tailscale IP or name"
+            hint = "Add a computer: IP address or name"
             setHintTextColor(0xFF6B7280.toInt())
             setTextColor(Color.WHITE)
             isSingleLine = true
@@ -202,11 +202,22 @@ class ConnectActivity : Activity() {
     private val tailnetHeader by lazy {
         text(13f, 0xFF9AA3B2.toInt(), "ON YOUR TAILNET").apply { setPadding(0, dp(12), 0, dp(8)) }
     }
+    private val homeHeader by lazy {
+        text(13f, 0xFF9AA3B2.toInt(), "ON THIS WI-FI").apply { setPadding(0, dp(12), 0, dp(8)) }
+    }
     private val tailnetRows = mutableMapOf<String, Row>()
     private val savedRows = mutableMapOf<String, Row>()
+    private val homeRows = mutableMapOf<String, Row>()
 
     /**
-     * Saved computers first, then the other devices on the tailnet. Android
+     * Computers (by saved or tailnet address) that answered on this Wi-Fi,
+     * with the address there: connecting goes direct, Tailscale or not.
+     */
+    private val viaHome = mutableMapOf<String, String>()
+
+    /**
+     * Saved computers first, then the ones on this Wi-Fi, then the other
+     * devices on the tailnet. Android
      * apps cannot ask Tailscale for its device list, so it comes from the
      * Remoter hosts themselves (GET /devices on each one that answers).
      */
@@ -214,21 +225,65 @@ class ConnectActivity : Activity() {
         list.removeAllViews()
         tailnetRows.clear()
         savedRows.clear()
+        homeRows.clear()
+        viaHome.clear()
         for (c in prefs.computers) {
             val r = row(prefs.name(c) ?: c, "Checking…", { connect(c) }, { computerMenu(c) })
             if (prefs.name(c) != null) r.detail.text = "$c · checking…"
             savedRows[c] = r
             addRow(r)
             probe(c) { build ->
+                if (build != null) discover(c)
+                if (viaHome.containsKey(c)) return@probe // found on the Wi-Fi meanwhile
                 r.state(build != null)
                 val where = if (prefs.name(c) != null) "$c · " else ""
                 r.detail.text = where + if (build != null) "Remoter $build" else "Not answering"
-                if (build != null) discover(c)
             }
         }
+        list.addView(homeHeader)
+        homeHeader.visibility = View.GONE
         list.addView(tailnetHeader)
         tailnetHeader.visibility = View.GONE
         prefs.tailnet?.let { cached -> runCatching { showTailnet(JSONObject(cached), fresh = false) } }
+        findHome()
+    }
+
+    /** Asks this Wi-Fi which computers run Remoter (see [Lan]). */
+    private fun findHome() {
+        pool.execute {
+            val found = Lan.discover().filter { it.remoter.isNotEmpty() }
+            main.post { if (!isDestroyed) showHome(found) }
+        }
+    }
+
+    private fun showHome(found: List<LanAnswer>) {
+        for (a in found) {
+            val detail = "${a.ip} on this Wi-Fi · Remoter ${a.remoter}"
+            // The same computer under its saved or tailnet address: keep its
+            // row, and connect to it here.
+            val key = listOf(a.addr, "${a.tailnet}:8080").firstOrNull { savedRows.containsKey(it) || tailnetRows.containsKey(it) }
+                ?: a.tailnet.takeIf { it.isNotEmpty() }?.let { "$it:8080" }
+            if (key != null) viaHome[key] = a.addr
+            val known = savedRows[key] ?: tailnetRows[key]
+            if (known != null) {
+                if (a.name.isNotEmpty()) known.title.text = a.name
+                known.detail.text = detail
+                known.state(true)
+                continue
+            }
+            val target = key ?: a.addr
+            val r = homeRows.getOrPut(target) {
+                row(a.name.ifEmpty { a.ip }, detail, { connect(target) }, null).also {
+                    list.addView(it.view, list.indexOfChild(tailnetHeader), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        bottomMargin = dp(8)
+                    })
+                }
+            }
+            r.detail.text = detail
+            r.state(true)
+            if (a.name.isNotEmpty() && prefs.name(target) != a.name) prefs.setName(target, a.name)
+            homeHeader.visibility = View.VISIBLE
+        }
     }
 
     /** Asks a host for the devices on its tailnet. Hosts without /devices just say 404. */
@@ -275,6 +330,7 @@ class ConnectActivity : Activity() {
                 saved.title.text = name
                 continue
             }
+            if (homeRows.containsKey(addr)) continue // listed under this Wi-Fi
             val r = tailnetRows.getOrPut(addr) {
                 row(name, detail, { connect(addr) }, null).also {
                     list.addView(it.view, list.childCount, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -283,9 +339,10 @@ class ConnectActivity : Activity() {
                 }
             }
             r.title.text = name
+            tailnetHeader.visibility = View.VISIBLE
+            if (viaHome.containsKey(addr)) continue // already says it is on this Wi-Fi
             r.detail.text = detail
             r.state(remoter.isNotEmpty())
-            tailnetHeader.visibility = View.VISIBLE
         }
     }
 
@@ -347,13 +404,14 @@ class ConnectActivity : Activity() {
         field.requestFocus()
     }
 
+    /** Connects to computer [c], over this Wi-Fi when it answered here. */
     private fun connect(c: String) {
         status.text = ""
         prefs.used(c)
         @Suppress("DEPRECATION")
         startActivityForResult(
             Intent(this, SessionActivity::class.java)
-                .putExtra(SessionActivity.EXTRA_COMPUTER, c)
+                .putExtra(SessionActivity.EXTRA_COMPUTER, viaHome[c] ?: c)
                 .putExtra(SessionActivity.EXTRA_PASSWORD, prefs.password(c)),
             REQUEST_SESSION,
         )
@@ -364,7 +422,8 @@ class ConnectActivity : Activity() {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_SESSION || data == null) return
-        val c = data.getStringExtra(SessionActivity.EXTRA_COMPUTER) ?: return
+        val c = data.getStringExtra(SessionActivity.EXTRA_COMPUTER)
+            ?.let { via -> viaHome.entries.firstOrNull { it.value == via }?.key ?: via } ?: return
         if (data.getBooleanExtra(SessionActivity.EXTRA_WRONG_PASSWORD, false)) {
             askPassword(c, "The computer did not accept the password.")
         } else {
@@ -429,7 +488,8 @@ class ConnectActivity : Activity() {
         private const val REQUEST_SESSION = 1
         private const val GREEN = 0xFF34D399.toInt()
         private const val GREY = 0xFF6B7280.toInt()
-        private const val HELP = "Tap a computer to connect. The password defaults to root.\n\n" +
+        private const val HELP = "Tap a computer to connect. The password defaults to root. " +
+            "Computers on the same Wi-Fi show up by themselves, no Tailscale needed.\n\n" +
             "Touch mouse (default): slide to move the pointer, tap to click, long-press or tap-and-slide to drag.\n" +
             "Direct touch: tap to click where you touch, long-press for right click.\n" +
             "Both: pinch to zoom, two fingers to scroll, two-finger tap for right click, " +

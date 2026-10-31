@@ -58,12 +58,19 @@ class ShareService : Service() {
         )
     }
 
+    /** Lets PCs on the same Wi-Fi find this phone to send to. */
+    private val lan = Lan.Responder {
+        JSONObject().put("name", ShareClient.deviceName(this)).put("os", "android").put("port", ShareServer.PORT)
+            .put("share", true).put("tailnet", Lan.tailscaleIp())
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(ONGOING_ID, ongoing(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         when (intent?.action) {
             ACTION_STOP -> {
                 share.receive = false
                 server.stop()
+                lan.stop()
                 if (sending.get() == 0) stopSelf()
                 return START_NOT_STICKY
             }
@@ -71,6 +78,7 @@ class ShareService : Service() {
         }
         if (share.receive) {
             if (!server.start()) Log.w(TAG, server.error ?: "cannot listen")
+            lan.start()
             nm.notify(ONGOING_ID, ongoing())
         } else if (sending.get() == 0 && intent?.action != ACTION_SEND) {
             stopSelf()
@@ -80,6 +88,7 @@ class ShareService : Service() {
 
     override fun onDestroy() {
         server.stop()
+        lan.stop()
         senders.shutdownNow()
         super.onDestroy()
     }
