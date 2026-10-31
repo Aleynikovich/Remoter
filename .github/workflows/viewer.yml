@@ -8,7 +8,7 @@ name: Viewer
 on:
   push:
     tags: ["v*"]
-    branches: [main, "claude/**", "!claude/project-thread-jb47gi"]
+    branches: [main, "claude/**"]
 permissions:
   contents: write
 jobs:

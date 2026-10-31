@@ -8,7 +8,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
-    branches: [main, "claude/**", "!claude/project-thread-yv34xl", "!claude/project-thread-shn7nm", "!claude/project-thread-jb47gi"]
+    branches: [main, "claude/**", "!claude/project-thread-yv34xl", "!claude/project-thread-shn7nm"]
 permissions:
   contents: write
 jobs:
