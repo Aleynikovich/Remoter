@@ -859,8 +859,10 @@ const (
 	maxVideoArea = 4096 * 2304
 )
 
-// videoSize is the size a w×h capture is encoded at, at scale percent of
+// VideoSize is the size a w×h capture is encoded at, at scale percent of
 // full resolution and within the limits above.
+func VideoSize(w, h, scale int) (int, int) { return videoSize(w, h, scale) }
+
 func videoSize(w, h, scale int) (int, int) {
 	limit := min(maxVideoSide/float64(w), maxVideoSide/float64(h), math.Sqrt(maxVideoArea/float64(w*h)))
 	if limit < float64(scale)/100 {

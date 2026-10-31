@@ -77,11 +77,18 @@ func main() {
 				sizes = append(sizes, p)
 			}
 		}
-		name, err := mf.SelfTest(sizes...)
+		// The first size must work; for the others, list the ones the
+		// encoder refuses (it may stop short of a wide monitor).
+		name, err := mf.SelfTestAt(image.Pt(1280, 720))
 		if err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println(name)
+		for _, size := range sizes {
+			if _, err := mf.SelfTestAt(size); err != nil {
+				fmt.Printf("refused %dx%d: %v\n", size.X, size.Y, err)
+			}
+		}
 		return
 	}
 

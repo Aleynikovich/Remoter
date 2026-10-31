@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -136,10 +138,15 @@ func newAgent(o hostOptions) *host.Agent {
 			if !gpuVideo.Load() {
 				return cpu(w, h, kbps)
 			}
+			size := image.Pt(w, h)
+			if _, failed := gpuFailed.Load(size); failed {
+				return cpu(w, h, kbps)
+			}
 			e, err := mf.NewEncoder(w, h, cmp.Or(kbps, o.kbps))
 			if err != nil {
-				log.Printf("GPU H.264 encoder off, using the CPU: %v", err)
-				gpuVideo.Store(false)
+				// Only this size: Auto may well pick one the GPU takes.
+				log.Printf("GPU H.264 encoder cannot do %dx%d, using the CPU for it: %v", w, h, err)
+				gpuFailed.Store(size, true)
 				return cpu(w, h, kbps)
 			}
 			if videoEncoder.Swap(e.Name()+" on the GPU") != e.Name()+" on the GPU" {
@@ -149,16 +156,31 @@ func newAgent(o hostOptions) *host.Agent {
 		}
 		if runtime.GOOS == "windows" {
 			go func() {
-				// Try the sizes Auto will use on this screen, too.
+				// Try the sizes the stream will use here, too: each
+				// monitor's and all of them side by side, at 100% and
+				// at sizes Auto picks, as the stream limits them.
 				sizes := []string{"1280x720"}
-				if r := displayBounds(o.display); !r.Empty() {
-					for _, scale := range []int{100, 75, 50} {
-						sizes = append(sizes, fmt.Sprintf("%dx%d", r.Dx()*scale/100&^1, r.Dy()*scale/100&^1))
-					}
+				var all image.Rectangle
+				for _, r := range capture.Displays() {
+					all = all.Union(r)
+					sizes = append(sizes, testSizes(r)...)
 				}
-				if err := childSelfTest("-gpu-video-selftest=" + strings.Join(sizes, ",")); err != nil {
+				if !all.Empty() {
+					sizes = append(sizes, testSizes(all)...)
+				}
+				out, err := childSelfTestOutput("-gpu-video-selftest=" + strings.Join(sizes, ","))
+				if err != nil {
 					log.Printf("GPU H.264 encoder off, using the CPU: %v", err)
 					return
+				}
+				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+				log.Printf("GPU H.264 encoder %s passed its self-test", strings.TrimSpace(lines[0]))
+				for _, l := range lines[1:] {
+					var size image.Point
+					if _, err := fmt.Sscanf(l, "refused %dx%d:", &size.X, &size.Y); err == nil {
+						gpuFailed.Store(size, true)
+						log.Printf("GPU H.264 encoder %s; the CPU encodes that size", strings.TrimSpace(l))
+					}
 				}
 				gpuVideo.Store(true)
 				// Switch encoders on the next picture.
@@ -181,20 +203,27 @@ func prepareVideo() error {
 // childSelfTest runs this program with flag in a child process, which exits
 // with an error (or crashes) when the feature does not work here.
 func childSelfTest(flag string) error {
+	_, err := childSelfTestOutput(flag)
+	return err
+}
+
+// childSelfTestOutput is childSelfTest that also returns what the child
+// printed.
+func childSelfTestOutput(flag string) ([]byte, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe, flag)
 	update.HideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		first, _, _ := bytes.Cut(bytes.TrimSpace(out), []byte("\n"))
-		return fmt.Errorf("self-test failed: %v: %s", err, first)
+		return nil, fmt.Errorf("self-test failed: %v: %s", err, first)
 	}
-	return nil
+	return out, nil
 }
 
 // runHost keeps the agent connected to the relay until ctx ends, so the
@@ -300,4 +329,20 @@ func (c closedVideo) Size() (int, int) { return c.w, c.h }
 func (c closedVideo) Close()           {}
 func (c closedVideo) Encode(*image.RGBA, bool) ([]byte, bool, error) {
 	return nil, false, errors.New("no video encoder")
+}
+
+// gpuFailed holds the picture sizes the GPU encoder refused.
+var gpuFailed sync.Map
+
+// testSizes lists, as WxH, the sizes video of a capture of r is encoded at
+// at full resolution and two of Auto's steps.
+func testSizes(r image.Rectangle) []string {
+	var sizes []string
+	for _, scale := range []int{100, 75, 50} {
+		w, h := host.VideoSize(r.Dx(), r.Dy(), scale)
+		if s := fmt.Sprintf("%dx%d", w&^1, h&^1); !slices.Contains(sizes, s) {
+			sizes = append(sizes, s)
+		}
+	}
+	return sizes
 }
