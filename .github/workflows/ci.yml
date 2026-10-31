@@ -116,6 +116,9 @@ jobs:
           $ok = $false
           foreach ($i in 1..30) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/version | Out-Null; $ok = $true; break } catch { Start-Sleep 1 } }
           if (-not $ok) { "installed Remoter never answered"; $fail = $true }
+          foreach ($lnk in "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Remoter.lnk", "$env:PUBLIC\Desktop\Remoter.lnk") {
+            if (-not (Test-Path $lnk)) { "missing shortcut $lnk"; $fail = $true }
+          }
 
           # A stale copy started again hands over to the installed one.
           $c = Start-Process -PassThru -WindowStyle Hidden "$old\remoter-windows-amd64.exe" "-background -test-pattern"

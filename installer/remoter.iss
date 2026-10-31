@@ -45,14 +45,19 @@ CloseApplications=no
 RestartApplications=no
 
 [Tasks]
-Name: desktopicon; Description: "Create a desktop shortcut"; Flags: unchecked
+Name: desktopicon; Description: "Create a desktop shortcut"
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "remoter.exe"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Remoter"; Filename: "{app}\remoter.exe"
+; Straight in the Start menu, not in a folder, so it is easy to find.
+Name: "{autoprograms}\Remoter"; Filename: "{app}\remoter.exe"
 Name: "{autodesktop}\Remoter"; Filename: "{app}\remoter.exe"; Tasks: desktopicon
+
+[InstallDelete]
+; dev-57 put the shortcut in a Remoter folder.
+Type: filesandordirs; Name: "{autoprograms}\Remoter"
 
 [Registry]
 ; Tells copies downloaded elsewhere to hand over to this one.
