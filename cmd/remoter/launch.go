@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,7 +36,14 @@ func launch(addr string, server bool, password string, args []string) bool {
 		return false
 	}
 	if server {
-		if v, ok := runningVersion(addr); ok {
+		v, pid, ok := serving(addr)
+		// Copies of other builds or from other folders, and ones still
+		// waiting for the port, are leftovers: only one Remoter shares this
+		// computer.
+		if ok && v == version() {
+			stopProcs(strayHosts(listRemoters(), portNum(addr), pid), "another Remoter is already sharing this computer")
+		}
+		if ok {
 			if v == version() {
 				fmt.Printf("Remoter %s is already running in the background.\n", v)
 				printInfo(addr, password)
@@ -47,6 +55,7 @@ func launch(addr string, server bool, password string, args []string) bool {
 				fmt.Println("Could not stop it:", err)
 			}
 		}
+		stopProcs(strayHosts(listRemoters(), portNum(addr)), "replaced by "+exe)
 	}
 	if err := startDetached(exe, append(args, "-background"), os.Environ()); err != nil {
 		fmt.Println("Could not start Remoter in the background:", err)
@@ -111,19 +120,30 @@ func pause() {
 	}
 }
 
+// pidHeader on /version names the process that answered.
+const pidHeader = "X-Remoter-Pid"
+
 // runningVersion asks a Remoter on addr which build it is.
 func runningVersion(addr string) (string, bool) {
+	v, _, ok := serving(addr)
+	return v, ok
+}
+
+// serving asks a Remoter on addr which build it is and which process it
+// runs in. Builds from before the process was reported give pid 0.
+func serving(addr string) (version string, pid uint32, ok bool) {
 	client := http.Client{Timeout: time.Second}
 	resp, err := client.Get("http://" + localAddr(addr) + "/version")
 	if err != nil {
-		return "", false
+		return "", 0, false
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 100))
 	if resp.StatusCode != http.StatusOK {
-		return "", false
+		return "", 0, false
 	}
-	return strings.TrimSpace(string(b)), true
+	n, _ := strconv.ParseUint(resp.Header.Get(pidHeader), 10, 32)
+	return strings.TrimSpace(string(b)), uint32(n), true
 }
 
 // stopRunning asks the Remoter on addr to exit and waits until it has.

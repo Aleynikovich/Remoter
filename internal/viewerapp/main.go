@@ -162,6 +162,9 @@ func keepUpdated(exe string, updated *atomic.Bool) {
 			setUpdateState(rel.Tag + " installed, restarting when you disconnect")
 			updated.Store(true)
 			return
+		case rel != nil && !update.Replaceable(exe):
+			// Installed in Program Files: the boot service updates it.
+			setUpdateState(rel.Tag + " is out, the Remoter service is installing it")
 		case rel != nil:
 			log.Printf("installing %s", rel.Tag)
 			setUpdateState("installing " + rel.Tag + "…")
