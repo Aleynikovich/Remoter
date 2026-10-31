@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,20 +20,20 @@ import (
 // DefaultPort is where a Remoter host serves viewers unless told otherwise.
 const DefaultPort = "8080"
 
-// Device is a computer on the user's Tailscale network.
+// Device is a computer on the user's Tailscale network or home network.
 type Device struct {
 	Name   string // host name
 	OS     string // as Tailscale reports it: windows, linux, macOS, android...
-	IP     string // its Tailscale IPv4 address
+	IP     string // its Tailscale IPv4 address, or its home one when not on the tailnet
 	Online bool
 	Self   bool // the computer the viewer runs on
+	// LAN is its address on the home network when it answered there, and
+	// Port its relay port when that is not DefaultPort.
+	LAN, Port string
 	// Remoter is the build a Remoter host on the device reports, or "" when
 	// none answered on DefaultPort.
 	Remoter string
 }
-
-// Addr is the server address to connect to the device.
-func (d Device) Addr() string { return net.JoinHostPort(d.IP, DefaultPort) }
 
 // tailscaleStatus is the part of `tailscale status --json` the viewer reads.
 type tailscaleStatus struct {

@@ -25,7 +25,7 @@ import java.util.concurrent.Executors
  *     POST /share/text              body = text or a link
  *
  * Senders name themselves in X-Remoter-From; batches of files are numbered
- * with X-Remoter-Index / X-Remoter-Count. Only devices on the tailnet (and
+ * with X-Remoter-Index / X-Remoter-Count. Only devices on the tailnet or home network (and
  * this phone) may connect. One request per connection.
  */
 class ShareServer(
@@ -264,9 +264,9 @@ class ShareServer(
         const val PORT = 8080
         const val MAX_TEXT = 1 shl 20
 
-        /** Tailscale addresses (100.64.0.0/10, fd7a:115c:a1e0::/48) and this phone. */
+        /** Tailscale addresses (100.64.0.0/10, fd7a:115c:a1e0::/48), the home network and this phone. */
         fun allowed(a: InetAddress): Boolean {
-            if (a.isLoopbackAddress) return true
+            if (Lan.isLocal(a)) return true
             val b = a.address
             return when (a) {
                 is Inet4Address -> (b[0].toInt() and 0xff) == 100 && (b[1].toInt() and 0xc0) == 64

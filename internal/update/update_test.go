@@ -137,3 +137,40 @@ func TestOlder(t *testing.T) {
 		}
 	}
 }
+
+func TestLatestWithoutAPI(t *testing.T) {
+	// dev-11 failed to build, so its number has no release.
+	have := map[string]bool{"/dl/dev-10/remoter.exe": true, "/dl/dev-12/remoter.exe": true}
+	apiHits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api":
+			apiHits++
+			w.Header().Set("X-RateLimit-Reset", "9999999999")
+			http.Error(w, "rate limit exceeded", http.StatusForbidden)
+		case have[r.URL.Path]:
+			http.Redirect(w, r, "/storage"+r.URL.Path, http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := &Checker{Current: "dev-9", Asset: "remoter.exe", API: srv.URL + "/api", Download: srv.URL + "/dl"}
+	for range 2 {
+		rel, asset, err := c.Latest(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rel == nil || rel.Tag != "dev-12" || asset.URL != srv.URL+"/dl/dev-12/remoter.exe" {
+			t.Fatalf("got %+v %+v, want dev-12", rel, asset)
+		}
+	}
+	if apiHits != 1 {
+		t.Errorf("API asked %d times, want once until the limit resets", apiHits)
+	}
+	c.Current = "dev-12"
+	if rel, _, err := c.Latest(context.Background()); err != nil || rel != nil {
+		t.Errorf("up to date: got %+v, %v", rel, err)
+	}
+}

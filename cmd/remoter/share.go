@@ -15,12 +15,14 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aleynikovich/remoter/internal/lan"
 	"github.com/aleynikovich/remoter/internal/share"
 )
 
@@ -51,7 +53,7 @@ func registerShare(mux *http.ServeMux) {
 		Name:    deviceName(),
 		Version: version(),
 		Dir:     share.DownloadDir(),
-		Allow:   fromTailnet,
+		Allow:   fromHome,
 		Files:   desk.Files,
 		Text:    desk.Text,
 	}
@@ -120,21 +122,38 @@ func registerShare(mux *http.ServeMux) {
 	}))
 }
 
-// findTargets lists the devices on the tailnet that receive shares, phones
-// first.
+// findTargets lists the devices on the home network and the tailnet that
+// receive shares, phones first. A device on both is reached over the home
+// network.
 func findTargets(ctx context.Context) ([]target, error) {
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
+	home := make(chan []lan.Answer, 1)
+	go func() {
+		as, _ := lan.Discover(ctx, 1500*time.Millisecond)
+		home <- as
+	}()
 	devices, err := tailnetDevices(ctx)
-	if err != nil {
+	ts := []target{}
+	self := lan.TailscaleIP()
+	onLAN := map[string]bool{} // tailnet IPs answered for on the home network
+	for _, a := range <-home {
+		if !a.Share || a.Tailnet != "" && a.Tailnet == self || slices.Contains(lan.Addresses(), a.IP) {
+			continue
+		}
+		ts = append(ts, target{Name: a.Name, OS: a.OS, IP: a.IP, base: "http://" + a.Addr()})
+		if a.Tailnet != "" {
+			onLAN[a.Tailnet] = true
+		}
+	}
+	if err != nil && len(ts) == 0 {
 		return nil, err
 	}
 	c := &share.Client{HTTP: &http.Client{Timeout: 2 * time.Second}}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	ts := []target{}
 	for _, d := range devices {
-		if d.Self || !d.Online {
+		if d.Self || !d.Online || onLAN[d.IP] {
 			continue
 		}
 		wg.Add(1)

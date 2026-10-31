@@ -25,6 +25,7 @@ import (
 	"github.com/aleynikovich/remoter/internal/capture"
 	"github.com/aleynikovich/remoter/internal/diag"
 	"github.com/aleynikovich/remoter/internal/h264"
+	"github.com/aleynikovich/remoter/internal/lan"
 	"github.com/aleynikovich/remoter/internal/mf"
 	"github.com/aleynikovich/remoter/internal/relay"
 	"github.com/aleynikovich/remoter/internal/update"
@@ -363,6 +364,19 @@ func startServer(ctx context.Context, addr string, relayToo bool, stop func()) (
 			log.Fatal(err)
 		}
 	}()
+	// Viewers on the same home network find this computer without
+	// Tailscale by asking on the UDP port of the same number.
+	tcpPort := ln.Addr().(*net.TCPAddr).Port
+	lan.ServeInBackground(ctx, tcpPort, func() lan.Answer {
+		a := lan.Answer{Name: deviceName(), OS: runtime.GOOS, Port: tcpPort, Share: true, Tailnet: lan.TailscaleIP()}
+		if relayToo {
+			a.Remoter = version()
+		}
+		return a
+	})
+	if home := lan.Addresses(); len(home) > 0 {
+		log.Printf("on your home network this computer is at %s (port %d)", strings.Join(home, ", "), tcpPort)
+	}
 	if relayToo {
 		log.Printf("viewer at http://localhost%s (or this computer's address)", portOf(addr))
 	} else {

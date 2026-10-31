@@ -31,9 +31,12 @@ type Config struct {
 
 // PasswordFor is the password to try for server: the one that worked last
 // time, or the hosts' default.
-func (c Config) PasswordFor(server string) string {
-	if p, ok := c.Passwords[server]; ok {
-		return p
+// With several addresses for one computer, the first one known wins.
+func (c Config) PasswordFor(server string, more ...string) string {
+	for _, s := range append([]string{server}, more...) {
+		if p, ok := c.Passwords[s]; ok {
+			return p
+		}
 	}
 	return "root"
 }

@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	"github.com/aleynikovich/remoter/internal/h264"
+	"github.com/aleynikovich/remoter/internal/lan"
 	"github.com/aleynikovich/remoter/internal/protocol"
 	"github.com/aleynikovich/remoter/internal/stream"
 	"github.com/aleynikovich/remoter/internal/viewer"
@@ -399,7 +400,7 @@ func (a *app) formClick(x, y int) {
 // ---- device list ----
 
 // scanResult is a look at the tailnet: first the bare list, then (probed)
-// with what runs on each device.
+// with what runs on each device and what answered on the home network.
 type scanResult struct {
 	devices []viewer.Device
 	probed  bool
@@ -415,13 +416,21 @@ func (a *app) scan() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		home := make(chan []lan.Answer, 1)
+		go func() { home <- viewer.HomeDevices(ctx) }()
 		ds, err := viewer.TailnetDevices(ctx)
 		if err != nil {
-			a.scans <- scanResult{err: err, probed: true}
+			// Without Tailscale, the home network may still have some.
+			if hs := viewer.MergeHome(nil, <-home); len(hs) > 0 {
+				a.scans <- scanResult{devices: hs, probed: true}
+			} else {
+				a.scans <- scanResult{err: err, probed: true}
+			}
 		} else {
 			a.scans <- scanResult{devices: slices.Clone(ds)}
 			a.wakeUp()
-			a.scans <- scanResult{devices: viewer.ProbeDevices(ctx, ds), probed: true}
+			ds = viewer.ProbeDevices(ctx, ds)
+			a.scans <- scanResult{devices: viewer.MergeHome(ds, <-home), probed: true}
 		}
 		a.wakeUp()
 	}()
@@ -498,7 +507,7 @@ func (a *app) openSelected() {
 	}
 	// Hosts use the default password unless set otherwise, so computers
 	// on the tailnet open without asking.
-	a.form.values = [3]string{d.Addr(), "", a.cfg.PasswordFor(d.Addr())}
+	a.form.values = [3]string{d.Addr(), "", a.cfg.PasswordFor(d.Addr(), d.Addrs()...)}
 	a.connectAs(d.Name)
 }
 
