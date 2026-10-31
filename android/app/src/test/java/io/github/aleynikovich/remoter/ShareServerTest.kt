@@ -71,11 +71,13 @@ class ShareServerTest {
     }
 
     @Test
-    fun onlyTailnet() {
+    fun onlyTailnetAndHomeNetwork() {
         assertTrue(ShareServer.allowed(InetAddress.getByName("100.116.112.42")))
         assertTrue(ShareServer.allowed(InetAddress.getByName("127.0.0.1")))
         assertTrue(ShareServer.allowed(InetAddress.getByName("fd7a:115c:a1e0::1")))
-        assertFalse(ShareServer.allowed(InetAddress.getByName("192.168.1.20")))
+        assertTrue(ShareServer.allowed(InetAddress.getByName("192.168.1.20")))
+        assertTrue(ShareServer.allowed(InetAddress.getByName("10.0.0.5")))
+        assertTrue(ShareServer.allowed(InetAddress.getByName("fe80::1")))
         assertFalse(ShareServer.allowed(InetAddress.getByName("100.128.0.1")))
         assertFalse(ShareServer.allowed(InetAddress.getByName("8.8.8.8")))
     }
