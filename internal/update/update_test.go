@@ -174,3 +174,69 @@ func TestLatestWithoutAPI(t *testing.T) {
 		t.Errorf("up to date: got %+v, %v", rel, err)
 	}
 }
+
+func TestLatestSingleApp(t *testing.T) {
+	app := func(tag, url string) Release {
+		return Release{Tag: tag, Assets: []Asset{{Name: "remoter.exe", URL: url}, {Name: Marker}}}
+	}
+	releases := []Release{
+		app("viewer-dev-40", "v40"), // the viewer-only line's last build is the app
+		{Tag: "viewer-dev-39", Assets: []Asset{{Name: "remoter.exe"}}},
+		{Tag: "dev-60", Assets: []Asset{{Name: "remoter.exe"}}}, // host-only build from an old branch
+		app("dev-58", "u58"),
+		app("dev-57", "u57"),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(releases)
+	}))
+	defer srv.Close()
+	for _, tc := range []struct{ current, want string }{
+		{"viewer-dev-38", "dev-58"}, // an old viewer moves to the app's series
+		{"viewer-dev-40", "dev-58"},
+		{"dev-50", "dev-58"},
+		{"dev-58", ""},
+	} {
+		c := &Checker{Current: tc.current, Asset: "remoter.exe", Marker: Marker, Series: Series, API: srv.URL}
+		rel, _, err := c.Latest(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := ""
+		if rel != nil {
+			got = rel.Tag
+		}
+		if got != tc.want {
+			t.Errorf("current %s: got %q, want %q", tc.current, got, tc.want)
+		}
+	}
+}
+
+func TestProbeSingleApp(t *testing.T) {
+	// dev-11 is a host-only build from an old branch: it has no marker.
+	have := map[string]bool{
+		"/dl/dev-11/remoter.exe": true,
+		"/dl/dev-12/" + Marker:   true, "/dl/dev-12/remoter.exe": true,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api":
+			http.Error(w, "rate limit exceeded", http.StatusForbidden)
+		case have[r.URL.Path]:
+			http.Redirect(w, r, "/storage"+r.URL.Path, http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := &Checker{Current: "dev-10", Asset: "remoter.exe", Marker: Marker, Series: Series, API: srv.URL + "/api", Download: srv.URL + "/dl"}
+	rel, asset, err := c.Latest(context.Background())
+	if err != nil || rel == nil || rel.Tag != "dev-12" || asset.URL != srv.URL+"/dl/dev-12/remoter.exe" {
+		t.Errorf("got %+v %+v %v, want dev-12", rel, asset, err)
+	}
+	// An old viewer's build has no app number to count from: it waits for
+	// the API instead of guessing.
+	c = &Checker{Current: "viewer-dev-30", Asset: "remoter.exe", Marker: Marker, Series: Series, API: srv.URL + "/api", Download: srv.URL + "/dl"}
+	if rel, _, err := c.Latest(context.Background()); err == nil || rel != nil {
+		t.Errorf("viewer build: got %+v, %v, want an error", rel, err)
+	}
+}

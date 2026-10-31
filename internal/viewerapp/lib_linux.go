@@ -1,4 +1,4 @@
-package main
+package viewerapp
 
 import (
 	"errors"
@@ -58,3 +58,6 @@ func setupLog() {
 		log.SetOutput(io.MultiWriter(os.Stderr, f))
 	}
 }
+
+// hideConsole is only needed on Windows.
+func hideConsole() {}

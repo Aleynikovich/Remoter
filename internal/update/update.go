@@ -53,11 +53,26 @@ type Asset struct {
 	Digest string `json:"digest"` // "sha256:<hex>", when GitHub provides it
 }
 
+// Marker is the release file that only builds of the single Remoter app
+// (host and viewer in one) carry. Older host-only and viewer-only builds,
+// which branches that predate it may still publish, lack it, so an app
+// that looks for it never turns back into one of them.
+const Marker = "remoter-version.txt"
+
+// Series is the build series of the single app.
+const Series = "dev-"
+
 // Checker finds newer releases.
 type Checker struct {
 	Current string // this binary's tag
 	Asset   string // release file to look for
-	API     string // releases endpoint; defaults to GitHub's for Repo
+	// Marker, when set, is another file a release must carry to count.
+	Marker string
+	// Series, when set, skips dev builds of other series ("viewer-dev-"
+	// when Series is "dev-"), so a build can move from one series to
+	// another and then stay there.
+	Series string
+	API    string // releases endpoint; defaults to GitHub's for Repo
 	// Download is where release files are, as Download/<tag>/<asset>;
 	// defaults to GitHub's for Repo.
 	Download string
@@ -69,6 +84,19 @@ type Checker struct {
 	// every Remoter at home shares one address. Once that runs out, files
 	// are looked for directly until the limit resets.
 	limitedUntil time.Time
+}
+
+// AppChecker looks for newer builds of the single Remoter app for this
+// platform. $REMOTER_UPDATE_API points it at a test server.
+func AppChecker(client *http.Client) *Checker {
+	return &Checker{
+		Current: Version,
+		Asset:   AssetName(),
+		Marker:  Marker,
+		Series:  Series,
+		API:     os.Getenv("REMOTER_UPDATE_API"),
+		Client:  client,
+	}
 }
 
 // probeMisses is how many missing build numbers in a row end a direct look
@@ -120,7 +148,10 @@ func (c *Checker) Latest(ctx context.Context) (*Release, *Asset, error) {
 		// none are dev builds.
 		for i := range releases {
 			r := &releases[i]
-			if r.Draft || r.asset(c.Asset) == nil {
+			if r.Draft || r.asset(c.Asset) == nil || !c.wants(r.Tag) {
+				continue
+			}
+			if c.Marker != "" && r.asset(c.Marker) == nil {
 				continue
 			}
 			if newest == nil || older(newest.Tag, r.Tag) {
@@ -143,12 +174,20 @@ func (c *Checker) Latest(ctx context.Context) (*Release, *Asset, error) {
 	return newest, newest.asset(c.Asset), nil
 }
 
+// wants reports whether tag is in the series c looks for. Tags that are
+// not dev builds (version tags) always are.
+func (c *Checker) wants(tag string) bool {
+	series, _, ok := buildNumber(tag)
+	return c.Series == "" || !ok || series == c.Series
+}
+
 // probe looks for newer builds of this series without GitHub's API: it asks
 // for the release file of each next build number, which is not rate
-// limited, and returns the highest one there.
+// limited, and returns the highest one there. A build moving to another
+// series (c.Series) has no number to count from, so it waits for the API.
 func (c *Checker) probe(ctx context.Context) (*Release, *Asset, error) {
 	series, n, ok := buildNumber(c.Current)
-	if !ok {
+	if !ok || !c.wants(c.Current) {
 		return nil, nil, errors.New("releases: GitHub API limit reached")
 	}
 	base := c.Download
@@ -167,7 +206,13 @@ func (c *Checker) probe(ctx context.Context) (*Release, *Asset, error) {
 	for k, misses := n+1, 0; misses < probeMisses; k++ {
 		tag := series + strconv.Itoa(k)
 		url := base + "/" + tag + "/" + c.Asset
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+		// The marker tells builds of the app from older ones of the same
+		// number range.
+		look := url
+		if c.Marker != "" {
+			look = base + "/" + tag + "/" + c.Marker
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, look, nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -312,6 +357,21 @@ func checkVersion(ctx context.Context, path, tag string) error {
 		return fmt.Errorf("new version reports %q, want %q", got, tag)
 	}
 	return nil
+}
+
+// InstalledVersion runs the binary at exe with -version. Another process
+// running the same file (the boot service, the background host or a viewer
+// window) may have updated it already; then there is nothing to download.
+func InstalledVersion(ctx context.Context, exe string) string {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "-version")
+	HideWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // Cleanup removes the binary replaced by the last update. The process that

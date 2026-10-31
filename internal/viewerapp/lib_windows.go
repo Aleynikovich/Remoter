@@ -1,4 +1,4 @@
-package main
+package viewerapp
 
 import (
 	"archive/zip"
@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 
@@ -144,5 +145,22 @@ func setupLog() {
 	f, err := os.OpenFile(filepath.Join(dir, "viewer.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err == nil {
 		log.SetOutput(f)
+	}
+}
+
+var (
+	kernel32                  = windows.NewLazySystemDLL("kernel32.dll")
+	procGetConsoleProcessList = kernel32.NewProc("GetConsoleProcessList")
+	procFreeConsole           = kernel32.NewProc("FreeConsole")
+)
+
+// hideConsole closes the console window Windows opens for Remoter when it
+// is started from the desktop rather than from a command prompt: then this
+// process is the only one using it.
+func hideConsole() {
+	var pids [2]uint32
+	n, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&pids[0])), 2)
+	if n == 1 {
+		procFreeConsole.Call()
 	}
 }

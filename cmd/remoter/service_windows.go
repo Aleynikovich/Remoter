@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"syscall"
 	"time"
@@ -141,8 +140,7 @@ func supervise(ctx context.Context) {
 func serviceUpdater(ctx context.Context, exe string, restart chan<- struct{}) {
 	go update.Cleanup(exe)
 	client := &http.Client{Timeout: 5 * time.Minute}
-	c := &update.Checker{Current: update.Version, Asset: update.AssetName(), Client: client}
-	c.API = os.Getenv("REMOTER_UPDATE_API")
+	c := update.AppChecker(client)
 	failed := ""
 	for {
 		select {
@@ -160,13 +158,22 @@ func serviceUpdater(ctx context.Context, exe string, restart chan<- struct{}) {
 		if rel == nil || rel.Tag == failed {
 			continue
 		}
-		log.Printf("service downloading %s", rel.Tag)
-		if err := update.Install(ctx, client, exe, asset, rel.Tag); err != nil {
-			log.Printf("service update to %s failed: %v", rel.Tag, err)
-			failed = rel.Tag
-			continue
+		if update.InstalledVersion(ctx, exe) == rel.Tag {
+			// A viewer window running this same file installed it.
+			log.Printf("service found %s already installed", rel.Tag)
+		} else {
+			log.Printf("service downloading %s", rel.Tag)
+			if err := update.Install(ctx, client, exe, asset, rel.Tag); err != nil {
+				log.Printf("service update to %s failed: %v", rel.Tag, err)
+				failed = rel.Tag
+				continue
+			}
+			log.Printf("service updated to %s", rel.Tag)
 		}
-		log.Printf("service updated to %s", rel.Tag)
+		// The service itself keeps running this build's code, so compare
+		// with what is installed now; otherwise every later check would
+		// install the same build again and restart the host each time.
+		c.Current = rel.Tag
 		select {
 		case restart <- struct{}{}:
 		default:

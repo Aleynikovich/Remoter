@@ -1,7 +1,10 @@
-// Command remoter shares this computer's screen. By default it runs the relay
-// (with the web viewer) and the host together, so one program on the shared
-// computer is all that is needed; -mode picks just one of them. It keeps
-// itself up to date from the project's GitHub releases.
+// Command remoter is the whole of Remoter: it shares this computer's screen
+// and, with "remoter view", controls other computers from a desktop window.
+// By default it runs the relay (with the web viewer) and the host together,
+// so one program on the shared computer is all that is needed; -mode picks
+// just one of them. Started from the Windows desktop it shares the computer
+// in the background and opens the viewer. It keeps itself up to date from
+// the project's GitHub releases.
 package main
 
 import (
@@ -29,6 +32,7 @@ import (
 	"github.com/aleynikovich/remoter/internal/mf"
 	"github.com/aleynikovich/remoter/internal/relay"
 	"github.com/aleynikovich/remoter/internal/update"
+	"github.com/aleynikovich/remoter/internal/viewerapp"
 	"github.com/aleynikovich/remoter/web"
 )
 
@@ -40,6 +44,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "send" {
 		os.Exit(runSend(os.Args[2:]))
 	}
+	if args, ok := viewerArgs(os.Args); ok {
+		viewerapp.Main(args)
+		return
+	}
+	openViewer = backgroundSupported && len(os.Args) == 1
 	mode := flag.String("mode", "all", `what to run: "all" (relay and host), "server" (relay only), "host" (host only) or "share" (only receive files and links from your other devices)`)
 	addr := flag.String("addr", ":8080", "relay listen address")
 	server := flag.String("server", "", "relay host endpoint for -mode host, e.g. ws://relay:8080/ws/host")
@@ -157,6 +166,9 @@ func main() {
 	if backgroundSupported && !*serviceHostFlag && serviceRunning() {
 		if _, ok := runningVersion(*addr); ok {
 			fmt.Println("Remoter is already running from boot (the Remoter service).")
+			if openViewer {
+				viewerapp.Main(nil)
+			}
 			return
 		}
 	}
@@ -164,6 +176,9 @@ func main() {
 	userArgs := withoutFlags(os.Args[1:], "background", "console", "no-elevate")
 	if backgroundSupported && !*console && !*background {
 		if launch(*addr, runServer, ho.password, userArgs) {
+			if openViewer {
+				viewerapp.Main(nil)
+			}
 			return
 		}
 		fmt.Println("Running in this window instead.")
@@ -408,8 +423,7 @@ func portOf(addr string) string {
 // and asks main to restart.
 func keepUpdated(ctx context.Context, exe string, every time.Duration, restart context.CancelCauseFunc) {
 	client := &http.Client{Timeout: 5 * time.Minute}
-	c := &update.Checker{Current: update.Version, Asset: update.AssetName(), Client: client}
-	c.API = os.Getenv("REMOTER_UPDATE_API") // for trying updates against a test server
+	c := update.AppChecker(client)
 	// A release that did not install is not downloaded again.
 	failed := ""
 	saidCurrent := false
@@ -424,6 +438,11 @@ func keepUpdated(ctx context.Context, exe string, every time.Duration, restart c
 			// Said once, so the window shows that checking works.
 			log.Printf("%s is the newest build, checking for updates every %v", update.Version, every)
 			saidCurrent = true
+		case rel != nil && update.InstalledVersion(ctx, exe) == rel.Tag:
+			// A viewer window running this same file installed it.
+			log.Printf("%s is already installed", rel.Tag)
+			restart(errRestart)
+			return
 		case rel != nil && rel.Tag != failed:
 			log.Printf("downloading %s", rel.Tag)
 			if err := update.Install(ctx, client, exe, asset, rel.Tag); err != nil {
