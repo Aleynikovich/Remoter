@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ import (
 const idEnv = "REMOTER_HOST_ID"
 
 func main() {
+	redirectToInstalled()
 	if len(os.Args) > 1 && os.Args[1] == "send" {
 		os.Exit(runSend(os.Args[2:]))
 	}
@@ -77,6 +79,8 @@ func main() {
 	serviceHostFlag := flag.Bool("service-host", false, "run the host started by the boot service (used internally)")
 	installSvc := flag.Bool("install-service", false, "Windows: start Remoter at boot, before sign-in, as a service")
 	uninstallSvc := flag.Bool("uninstall-service", false, "Windows: stop starting at boot (Remoter still starts when you sign in)")
+	setup := flag.Bool("setup", false, "Windows: make this the one Remoter on this computer (used by the installer)")
+	unsetup := flag.Bool("unsetup", false, "Windows: undo -setup (used by the uninstaller)")
 	flag.Parse()
 
 	if *gpuTest != "" {
@@ -121,6 +125,16 @@ func main() {
 	}
 	if *service {
 		if err := runService(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *setup || *unsetup {
+		run := runSetup
+		if *unsetup {
+			run = runUnsetup
+		}
+		if err := run(); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -336,6 +350,9 @@ func startServer(ctx context.Context, addr string, relayToo bool, stop func()) (
 		// list it as a computer to control.
 		mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
+			// Tells another Remoter on this computer which process serves,
+			// so it can stop the others.
+			w.Header().Set(pidHeader, strconv.Itoa(os.Getpid()))
 			fmt.Fprint(w, version())
 		})
 		// Embedded files carry no dates, so tell browsers to check every
@@ -443,6 +460,11 @@ func keepUpdated(ctx context.Context, exe string, every time.Duration, restart c
 			log.Printf("%s is already installed", rel.Tag)
 			restart(errRestart)
 			return
+		case rel != nil && !update.Replaceable(exe):
+			if rel.Tag != failed {
+				log.Printf("%s is out; the Remoter service installs it (this copy may not change %s)", rel.Tag, exe)
+				failed = rel.Tag
+			}
 		case rel != nil && rel.Tag != failed:
 			log.Printf("downloading %s", rel.Tag)
 			if err := update.Install(ctx, client, exe, asset, rel.Tag); err != nil {

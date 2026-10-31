@@ -39,6 +39,10 @@ jobs:
           echo "$VERSION" > dist/remoter-version.txt
           cp scripts/install-viewer.sh scripts/install-share.sh dist/
           ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/remoter-windows-amd64.exe
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
@@ -47,3 +51,29 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: ${{ github.ref_type != 'tag' || contains(github.ref_name, '-') }}
           generate_release_notes: true
+
+  # The Windows installer (RemoterSetup.exe) wraps the same remoter.exe.
+  # Installed copies update themselves like any other, so this is only
+  # needed for the first install.
+  installer:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Build the installer
+        shell: pwsh
+        env:
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc "/DAppVersion=$env:VERSION" "/DNumericVersion=1.0.${{ github.run_number }}.0" "/DSourceExe=$PWD\dist\remoter-windows-amd64.exe" "/O$PWD\dist" installer\remoter.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/RemoterSetup.exe
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}

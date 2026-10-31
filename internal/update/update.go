@@ -387,6 +387,20 @@ func Cleanup(exe string) {
 	}
 }
 
+// Replaceable reports whether this process may swap in a new version of
+// exe. A copy installed in Program Files can only be updated by the boot
+// service; viewer windows and others running from it just notice when the
+// service has done so.
+func Replaceable(exe string) bool {
+	f, err := os.CreateTemp(filepath.Dir(exe), ".remoter-update-*")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return true
+}
+
 // Executable returns the path of the running binary with symlinks resolved.
 func Executable() (string, error) {
 	exe, err := os.Executable()

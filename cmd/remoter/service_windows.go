@@ -55,15 +55,26 @@ func (remoterService) Execute(args []string, req <-chan svc.ChangeRequest, statu
 	status <- svc.Status{State: svc.StartPending}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go supervise(ctx)
+	done := make(chan struct{})
+	go func() {
+		supervise(ctx)
+		close(done)
+	}()
 	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	for c := range req {
 		switch c.Cmd {
 		case svc.Interrogate:
 			status <- c.CurrentStatus
 		case svc.Stop, svc.Shutdown:
-			status <- svc.Status{State: svc.StopPending}
+			status <- svc.Status{State: svc.StopPending, WaitHint: 5000}
 			cancel()
+			// Wait for the host to be stopped too: returning ends this
+			// process, and the host it started would keep running without
+			// a service to look after it.
+			select {
+			case <-done:
+			case <-time.After(4 * time.Second):
+			}
 			return false, 0
 		}
 	}
@@ -98,6 +109,7 @@ func supervise(ctx context.Context) {
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	var swept time.Time
 	for {
 		session := activeConsoleSession()
 		// Session 0 is the services' own session and has no desktop, and
@@ -113,6 +125,14 @@ func supervise(ctx context.Context) {
 		case child != nil && child.exited():
 			log.Printf("host exited, restarting")
 			stopChild()
+		}
+		if child != nil && !child.exited() && time.Since(child.started) > 10*time.Second && time.Since(swept) > 5*time.Second {
+			// Ours has had time to take the port, so any other Remoter
+			// sharing this computer is a leftover (a copy from another
+			// folder, or one started at sign-in in a race with ours) that
+			// would only sit waiting for the port.
+			stopProcs(strayHosts(listRemoters(), "8080", child.pid), "the Remoter service is sharing this computer")
+			swept = time.Now()
 		}
 		if child == nil && ready {
 			c, err := startHostInSession(exe, session)
@@ -169,6 +189,7 @@ func serviceUpdater(ctx context.Context, exe string, restart chan<- struct{}) {
 				continue
 			}
 			log.Printf("service updated to %s", rel.Tag)
+			setUninstallVersion(rel.Tag)
 		}
 		// The service itself keeps running this build's code, so compare
 		// with what is installed now; otherwise every later check would
@@ -335,6 +356,7 @@ type childProc struct {
 	handle  windows.Handle
 	pid     uint32
 	session uint32
+	started time.Time
 }
 
 func (c *childProc) exited() bool {
@@ -428,7 +450,7 @@ func startHostInSession(exe string, session uint32) (*childProc, error) {
 		return nil, err
 	}
 	windows.CloseHandle(pi.Thread)
-	return &childProc{handle: pi.Process, pid: pi.ProcessId, session: session}, nil
+	return &childProc{handle: pi.Process, pid: pi.ProcessId, session: session, started: time.Now()}, nil
 }
 
 // systemTokenForSession returns a primary token for the system account set

@@ -51,6 +51,10 @@ jobs:
             if (Test-Path $log) { "--- $log"; Get-Content -Tail 40 $log }
           }
           ./svc/remoter.exe -uninstall-service
+          # Stopping the service also stops the host it started.
+          Start-Sleep 1
+          $left = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'remoter.exe' -and $_.ExecutablePath -like '*\svc\remoter.exe' }
+          if ($left) { $left | Format-Table ProcessId, CommandLine; "host left running after the service stopped"; exit 1 }
           exit $code
       - if: runner.os == 'Windows'
         name: Background launch smoke test
@@ -77,3 +81,63 @@ jobs:
           $out = ./remoter-viewer-windows-amd64.exe -selftest | Out-String
           $out
           if ($out.Trim() -ne "ok") { exit 1 }
+      # Installs over a leftover downloaded copy (and one stuck waiting for
+      # the port), checks that only the installed boot service is left
+      # sharing the computer, that a stale copy hands over to it, and that
+      # uninstalling removes everything.
+      - if: runner.os == 'Windows'
+        name: Installer
+        shell: pwsh
+        run: |
+          go build -o dist\remoter-windows-amd64.exe ./cmd/remoter
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc "/DSourceExe=$PWD\dist\remoter-windows-amd64.exe" "/O$PWD\dist" installer\remoter.iss | Select-Object -Last 3
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          $old = New-Item -ItemType Directory -Force "$env:TEMP\old"
+          Copy-Item dist\remoter-windows-amd64.exe "$old\remoter-windows-amd64.exe"
+          Copy-Item dist\remoter-windows-amd64.exe "$old\remoter-host.exe"
+          $a = Start-Process -PassThru -WindowStyle Hidden "$old\remoter-windows-amd64.exe" "-background -test-pattern"
+          Start-Sleep 3
+          $b = Start-Process -PassThru -WindowStyle Hidden "$old\remoter-host.exe" "-background -test-pattern"
+          Start-Sleep 2
+          (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/version).Content
+
+          $setup = Start-Process -PassThru -Wait dist\RemoterSetup.exe "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=$PWD\setup.log"
+          "setup exit code $($setup.ExitCode)"
+          $fail = $setup.ExitCode -ne 0
+          function Show-Remoters { Get-CimInstance Win32_Process | Where-Object Name -like 'remoter*' | Format-Table -AutoSize ProcessId, CommandLine | Out-String -Width 300 }
+          Show-Remoters
+          $svc = Get-CimInstance Win32_Service -Filter "Name='Remoter'"
+          "service: $($svc.State) $($svc.PathName)"
+          if ($svc.State -ne 'Running' -or $svc.PathName -notlike "*Program Files\Remoter\remoter.exe*") { "boot service not running from Program Files"; $fail = $true }
+          foreach ($p in $a, $b) { if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) { "leftover $($p.Id) still running"; $fail = $true } }
+          $ok = $false
+          foreach ($i in 1..30) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080/version | Out-Null; $ok = $true; break } catch { Start-Sleep 1 } }
+          if (-not $ok) { "installed Remoter never answered"; $fail = $true }
+          foreach ($lnk in "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Remoter.lnk", "$env:PUBLIC\Desktop\Remoter.lnk") {
+            if (-not (Test-Path $lnk)) { "missing shortcut $lnk"; $fail = $true }
+          }
+
+          # A stale copy started again hands over to the installed one.
+          $c = Start-Process -PassThru -WindowStyle Hidden "$old\remoter-windows-amd64.exe" "-background -test-pattern"
+          Start-Sleep 15
+          if (Get-Process -Id $c.Id -ErrorAction SilentlyContinue) { "stale copy did not hand over"; $fail = $true }
+          $stray = Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'remoter*' -and $_.ExecutablePath -notlike "*Program Files\Remoter\*" }
+          if ($stray) { "copies outside Program Files still running"; $fail = $true }
+          $count = (Get-Process remoter -ErrorAction SilentlyContinue | Measure-Object).Count
+          "installed Remoter processes: $count (service and its host)"
+          if ($count -ne 2) { Show-Remoters; $fail = $true }
+
+          $un = Start-Process -PassThru -Wait "${env:ProgramFiles}\Remoter\unins000.exe" "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+          "uninstall exit code $($un.ExitCode)"
+          foreach ($i in 1..30) { if (-not (Test-Path "${env:ProgramFiles}\Remoter")) { break }; Start-Sleep 1 }
+          if (Get-Service Remoter -ErrorAction SilentlyContinue) { "service left behind"; $fail = $true }
+          if (Get-Process remoter* -ErrorAction SilentlyContinue) { Show-Remoters; "processes left behind"; $fail = $true }
+          if (Test-Path "${env:ProgramFiles}\Remoter") { Get-ChildItem "${env:ProgramFiles}\Remoter"; "files left behind"; $fail = $true }
+
+          foreach ($log in "$env:LOCALAPPDATA\Remoter\remoter.log", "C:\Windows\System32\config\systemprofile\AppData\Local\Remoter\remoter.log") {
+            if (Test-Path $log) { "--- $log"; Get-Content -Tail 60 $log }
+          }
+          if ($fail) { "--- setup.log"; Get-Content -Tail 40 setup.log; exit 1 }
