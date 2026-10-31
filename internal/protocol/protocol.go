@@ -54,6 +54,10 @@ const (
 	// whether the stream is in data saver mode (OK), which it is while any
 	// viewer asks for it.
 	TypeDataSaver = "data_saver"
+	// viewer -> server -> host: draw the host's real mouse pointer into
+	// the picture (OK set) or not, for this viewer. host -> server -> every
+	// viewer: whether it is drawn (OK), which it is while any viewer asks.
+	TypeRealPointer = "real_pointer"
 	// viewer -> server -> host: send diagnostics. host -> server -> every
 	// viewer: the host's diagnostics (settings, recent log) in Text.
 	TypeDiagnostics = "diagnostics"
@@ -89,7 +93,7 @@ type Message struct {
 // type on to the host.
 func FromViewer(typ string) bool {
 	switch typ {
-	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics, TypeQuality, TypeDataSaver:
+	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics, TypeQuality, TypeDataSaver, TypeRealPointer:
 		return true
 	}
 	return false
@@ -99,7 +103,7 @@ func FromViewer(typ string) bool {
 // type on to every viewer.
 func ToViewers(typ string) bool {
 	switch typ {
-	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics, TypeQuality, TypeDataSaver:
+	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics, TypeQuality, TypeDataSaver, TypeRealPointer:
 		return true
 	}
 	return false

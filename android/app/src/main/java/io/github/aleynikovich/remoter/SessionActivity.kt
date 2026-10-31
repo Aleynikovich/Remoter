@@ -54,6 +54,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     private lateinit var keyboardButton: TextView
     private lateinit var qualityButton: TextView
     private lateinit var saverButton: TextView
+    private lateinit var pointerButton: TextView
     /** Data saver asked of the host, and whether the host says it is on. */
     private var saver = false
     private var hostSaver = false
@@ -210,6 +211,8 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         keyboardButton = button("⌨ Keyboard") { toggleKeyboard() }
         qualityButton = button("Quality: Auto") { pickQuality() }
         saverButton = button("Data saver: off") { setSaver(!saver) }
+        pointerButton = button("") { setRealPointer(!prefs.realPointer) }
+        updatePointerButton()
         modeButton = button("") { toggleMode() }
         captureButton = button("Lock mouse") { screen.capture(!screen.isCaptured) }
         displayButton = button("Monitor 1") { pickDisplay() }.apply { visibility = View.GONE }
@@ -228,6 +231,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
             captureButton,
             qualityButton,
             saverButton,
+            pointerButton,
             button("Send clipboard") { sendClipboard(force = true) },
             button("Test link") { testLink() },
             stats,
@@ -399,6 +403,17 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
      * Data saver, for metered networks: the host sends at most 15 fps at half
      * resolution while any viewer asks for it.
      */
+    /** The host draws its real pointer into the picture while a viewer asks. */
+    private fun setRealPointer(on: Boolean) {
+        prefs.realPointer = on
+        client?.send(JSONObject().put("type", "real_pointer").put("ok", on))
+        updatePointerButton()
+    }
+
+    private fun updatePointerButton() {
+        pointerButton.text = "Real pointer: ${if (prefs.realPointer) "on" else "off"}"
+    }
+
     private fun setSaver(on: Boolean) {
         saver = on
         client?.send(JSONObject().put("type", "data_saver").put("ok", on))
@@ -587,6 +602,7 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         decoderErrors = 0
         client?.refresh(useVideo)
         if (saver) client?.send(JSONObject().put("type", "data_saver").put("ok", true))
+        if (prefs.realPointer) client?.send(JSONObject().put("type", "real_pointer").put("ok", true))
         checkMetered()
         sendClipboard()
     }

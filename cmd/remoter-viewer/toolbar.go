@@ -118,7 +118,11 @@ func (a *app) toolbarItems() []tbItem {
 	if a.saver {
 		saver = "Data saver: on"
 	}
-	items := []tbItem{{"picture", picture + "…"}, {"saver", saver + " (" + dataText(a.sessionBytes) + " used)"}}
+	pointer := "Real pointer: off"
+	if a.cfg.RealPointer {
+		pointer = "Real pointer: on"
+	}
+	items := []tbItem{{"picture", picture + "…"}, {"saver", saver + " (" + dataText(a.sessionBytes) + " used)"}, {"pointer", pointer}}
 	if a.displays > 1 {
 		label := fmt.Sprintf("Monitor %d/%d", a.display+1, a.displays)
 		if a.display >= a.displays {
@@ -234,6 +238,8 @@ func (a *app) toolbarAction(id string) {
 		t.picture = !t.picture
 	case "saver":
 		a.setSaver(!a.saver)
+	case "pointer":
+		a.setRealPointer(!a.cfg.RealPointer)
 	case "saver:yes", "saver:always":
 		a.closeToolbar()
 		if id == "saver:always" {
