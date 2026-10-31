@@ -92,8 +92,12 @@ func printInfo(addr, password string) {
 	fmt.Println("To stop it, run this program with -stop (add -no-autostart to also stop starting it at login).")
 }
 
-// pause keeps a double-clicked window open long enough to read.
+// pause keeps a double-clicked window open long enough to read, unless the
+// viewer window opens next.
 func pause() {
+	if openViewer {
+		return
+	}
 	fmt.Println()
 	fmt.Print("Press Enter to close this window.")
 	done := make(chan struct{})

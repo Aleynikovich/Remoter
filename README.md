@@ -79,7 +79,12 @@ Flags: `-mode`, `-addr`, `-server`, `-password`, `-fps`, `-quality`,
 
 ### Running in the background (Windows)
 
-On Windows the window you start Remoter from only launches it: Remoter
+Remoter is one program: it shares this computer and, with `remoter view`,
+opens the desktop viewer to control others. Double-clicking `remoter.exe`
+does both: it makes sure this computer is shared in the background and
+opens the viewer window.
+
+Started from a command prompt (or with any flags), the window only launches it: Remoter
 itself runs in the background with no window, so closing the window never
 drops the connection, and it adds itself to the programs Windows starts when
 you log in. The window says where it logs (`%LOCALAPPDATA%\Remoter\remoter.log`).
@@ -93,7 +98,8 @@ login), and `-console` runs it in the window as before.
 
 Release builds (from the [releases page](https://github.com/aleynikovich/remoter/releases))
 update themselves. Every two minutes they look for a newer release that has
-a `remoter-<os>-<arch>` file, download it next to the running program, check
+a `remoter-<os>-<arch>` file and `remoter-version.txt` (which only builds of
+the single app carry, so older host-only builds are never installed), download it next to the running program, check
 its size and SHA-256 and that it starts, swap it in (the previous version is
 kept as `remoter.old.exe` until the next start), and restart in the same
 window. The host keeps its ID across the restart and open viewers reconnect
@@ -135,15 +141,16 @@ give it keyboard focus.
 
 ### Desktop viewer (Linux and Windows)
 
-`remoter-viewer` is a native window instead of a browser tab: H.264 drawn by
+`remoter view` is a native window instead of a browser tab: H.264 drawn by
 the GPU without a browser in between, and the keyboard and mouse fully
 handed to the remote computer. It opens on a list of the computers on your
 Tailscale network, those running Remoter first; pick one and you are
 connected (with the hosts' default password, asking only if a computer uses
 another). "Connect by address…" is there for anything else.
 
-* **Linux**: install it for your user (it lands in `~/.local/bin` with a
-  menu entry, and updates itself):
+* **Linux**: install it for your user (it lands in `~/.local/bin/remoter`
+  with a menu entry, and updates itself; `remoter-viewer` stays as another
+  name that opens the viewer):
 
   ```sh
   curl -fsSL https://raw.githubusercontent.com/aleynikovich/remoter/main/scripts/install-viewer.sh | sh
@@ -151,12 +158,14 @@ another). "Connect by address…" is there for anything else.
 
   It needs SDL 2 and FFmpeg from the system (Arch: `pacman -S sdl2 ffmpeg`,
   Debian/Ubuntu: `apt install libsdl2-2.0-0 libavcodec-extra`).
-* **Windows**: download `remoter-viewer-windows-amd64.exe` from the newest
-  viewer release and run it; it updates itself. On first start it fetches
+* **Windows**: run `remoter.exe` (`remoter-windows-amd64.exe` from the newest
+  dev release); it updates itself. A copy still named like the old viewer
+  (`remoter-viewer-windows-amd64.exe`) updates into the same program and
+  only opens the viewer. On first start it fetches
   SDL from the SDL project (checksum pinned) and OpenH264 from Cisco, like the
   host, into `%LocalAppData%\Remoter`, where it also writes `viewer.log`.
 
-`remoter-viewer 100.102.208.35:8080` skips the list and connects straight
+`remoter view 100.102.208.35:8080` skips the list and connects straight
 away.
 
 * While connected, every key goes to the remote computer, including your
@@ -199,7 +208,7 @@ comes from scrcpy's GitHub release on first use, with its checksum pinned.
 * Install ADB on the computer (Debian/Ubuntu: `sudo apt install adb`, Arch:
   `pacman -S android-tools`, Windows: `winget install Google.PlatformTools`).
 * Phones appear in the viewer's Tailscale list; pick one and it opens in its
-  own window (or run `remoter-viewer phone 100.95.169.40`).
+  own window (or run `remoter phone 100.95.169.40`).
 * The first time, the window asks you to pair: on the phone, open
   Developer options › Wireless debugging and turn it on. Type the port shown
   under "IP address & Port", then tap "Pair device with pairing code" and
@@ -212,9 +221,9 @@ comes from scrcpy's GitHub release on first use, with its checksum pinned.
   phone lands on this computer's clipboard.
 * **Ctrl+Alt+S** saves a full-resolution screenshot to `Pictures/Remoter`
   and copies it to the clipboard (Linux needs `wl-clipboard` on Wayland or
-  `xclip` on X11 for the copy). `remoter-viewer phone-shot` does the same
+  `xclip` on X11 for the copy). `remoter phone-shot` does the same
   without the window, for a desktop hotkey, e.g. in `hyprland.conf`:
-  `bind = SUPER SHIFT, P, exec, remoter-viewer phone-shot`.
+  `bind = SUPER SHIFT, P, exec, remoter phone-shot`.
 * Ctrl+Alt+H Home, B Back, R recent apps, N notifications, P power, O turns
   the phone's own screen off (or back on) while mirroring goes on, Up/Down
   volume, Enter full screen.
@@ -303,7 +312,7 @@ go test -race ./...
 
 | Path | What |
 | --- | --- |
-| `cmd/remoter` | the binary: relay + web viewer and/or host agent |
+| `cmd/remoter` | the one program: relay + web viewer and/or host agent, and the desktop viewer (`remoter view`) |
 | `internal/update` | self-update from GitHub releases |
 | `internal/relay` | rendezvous, auth forwarding, frame/input relay |
 | `internal/host` | host agent session logic |
@@ -314,6 +323,6 @@ go test -race ./...
 | `internal/input` | applies mouse/keyboard on the host (Windows: SendInput) |
 | `internal/protocol` | wire messages |
 | `web/static` | browser viewer |
-| `cmd/remoter-viewer` | desktop viewer for Linux and Windows (SDL 2 and FFmpeg or OpenH264 loaded at run time) |
+| `internal/viewerapp` | desktop viewer for Linux and Windows (SDL 2 and FFmpeg or OpenH264 loaded at run time) |
 | `internal/viewer` | desktop viewer connection, Tailscale device list, key map and settings |
 | `internal/phone` | Android phone mirroring: ADB, scrcpy server protocol, screenshots |

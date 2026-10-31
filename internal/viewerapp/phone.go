@@ -1,6 +1,6 @@
 //go:build linux || windows
 
-package main
+package viewerapp
 
 import (
 	"bytes"
@@ -21,6 +21,7 @@ import (
 	"unsafe"
 
 	"github.com/aleynikovich/remoter/internal/phone"
+	"github.com/aleynikovich/remoter/internal/update"
 	"github.com/aleynikovich/remoter/internal/viewer"
 )
 
@@ -214,6 +215,7 @@ func openPhoneWindow(ip string) error {
 		return err
 	}
 	c := exec.Command(exe, "phone", ip)
+	update.HideWindow(c)
 	if err := c.Start(); err != nil {
 		return err
 	}

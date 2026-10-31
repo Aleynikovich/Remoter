@@ -1,9 +1,10 @@
 name: Viewer
-# Publishes the desktop viewer for Linux and Windows. Pushes get their own numbered
-# viewer-dev prerelease, so viewer builds never carry host binaries and a
-# test PC's host does not reinstall itself for viewer-only work. Viewers
-# install the newest release that has their asset, hosts the newest that
-# has theirs.
+# The desktop viewer used to be its own program with its own viewer-dev-N
+# releases. It is now part of remoter (release.yml), and this workflow
+# only moves copies of the old viewer over: it publishes the single app
+# under the old viewer's file names, so their updater installs it. The app
+# then follows the dev-N releases like every other Remoter, and keeps
+# opening as the viewer while its file is still named remoter-viewer.
 on:
   push:
     tags: ["v*"]
@@ -20,7 +21,6 @@ jobs:
           go-version-file: go.mod
       - name: Build
         env:
-          # SDL and FFmpeg are loaded at run time, so no cgo is needed.
           CGO_ENABLED: "0"
           VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('viewer-dev-{0}', github.run_number) }}
         run: |
@@ -28,11 +28,10 @@ jobs:
           ldflags="-s -w -X github.com/aleynikovich/remoter/internal/update.Version=$VERSION"
           for arch in amd64 arm64; do
             GOOS=linux GOARCH=$arch go build -trimpath -ldflags "$ldflags" \
-              -o "dist/remoter-viewer-linux-$arch" ./cmd/remoter-viewer
+              -o "dist/remoter-viewer-linux-$arch" ./cmd/remoter
           done
-          # A GUI program on Windows: no console window opens with it.
-          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags -H windowsgui" \
-            -o dist/remoter-viewer-windows-amd64.exe ./cmd/remoter-viewer
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$ldflags" \
+            -o dist/remoter-viewer-windows-amd64.exe ./cmd/remoter
           cp scripts/install-viewer.sh dist/
           ls -l dist
       - uses: softprops/action-gh-release@v2

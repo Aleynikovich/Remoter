@@ -1,10 +1,10 @@
 name: Release
 # Version tags (v1.2.3) publish a release. Pushes to main and to work
 # branches publish a numbered dev prerelease so builds can be tried before a
-# version is cut. Hosts install the newest one, so branches that only work on
-# the desktop viewer are left out: their host binary would replace the one from
-# the branch that is actually changing the host. Their viewer is published by
-# viewer.yml.
+# version is cut. Every Remoter installs the newest one: it is one program
+# that both shares a computer and views others. remoter-version.txt marks
+# these builds; host-only builds from branches that predate the single app
+# lack it, so an installed app never turns back into one of them.
 on:
   push:
     tags: ["v*"]
@@ -21,11 +21,13 @@ jobs:
           go-version-file: go.mod
       - name: Build
         env:
+          # SDL and FFmpeg (for the viewer) are loaded at run time, so no
+          # cgo is needed.
           CGO_ENABLED: "0"
           VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
         run: |
           mkdir dist
-          for target in windows/amd64 linux/amd64; do
+          for target in windows/amd64 linux/amd64 linux/arm64; do
             os=${target%/*}; arch=${target#*/}
             ext=""; [ "$os" = windows ] && ext=".exe"
             # The version stamp is what lets the binary find newer releases
@@ -34,6 +36,8 @@ jobs:
               -ldflags "-s -w -X github.com/aleynikovich/remoter/internal/update.Version=$VERSION" \
               -o "dist/remoter-${os}-${arch}${ext}" ./cmd/remoter
           done
+          echo "$VERSION" > dist/remoter-version.txt
+          cp scripts/install-viewer.sh scripts/install-share.sh dist/
           ls -l dist
       - uses: softprops/action-gh-release@v2
         with:

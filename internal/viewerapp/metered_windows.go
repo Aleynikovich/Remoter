@@ -1,4 +1,4 @@
-package main
+package viewerapp
 
 // metered reports whether the connection is metered. Windows is not asked
 // yet; data saver can still be turned on from the toolbar.

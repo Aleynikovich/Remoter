@@ -1,16 +1,17 @@
 //go:build linux || windows
 
-// Command remoter-viewer is the desktop viewer for Linux and Windows: a native window
-// that shows a Remoter host's screen and hands it the keyboard and mouse,
-// desktop shortcuts included.
+// Package viewerapp is Remoter's desktop viewer for Linux and Windows: a
+// native window that shows a Remoter host's screen and hands it the
+// keyboard and mouse, desktop shortcuts included. The remoter program runs
+// it as
 //
-//	remoter-viewer [-password root] [-id 123456789] [-fullscreen] [server:port]
-//	remoter-viewer phone [ip]       mirror and control an Android phone
-//	remoter-viewer phone-shot [ip]  copy a screenshot of the phone and save it
+//	remoter view [-password root] [-id 123456789] [-fullscreen] [server:port]
+//	remoter phone [ip]       mirror and control an Android phone
+//	remoter phone-shot [ip]  copy a screenshot of the phone and save it
 //
 // Started with a server address it connects straight away; otherwise it
 // shows a connect screen filled in with the last session's settings.
-package main
+package viewerapp
 
 import (
 	"context"
@@ -19,6 +20,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -27,43 +29,38 @@ import (
 	"github.com/aleynikovich/remoter/internal/viewer"
 )
 
-// assetName is the release file holding this program.
-func assetName() string {
-	name := "remoter-viewer-" + runtime.GOOS + "-" + runtime.GOARCH
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	return name
-}
-
 func init() {
 	// SDL's window and event calls must all come from the main thread.
 	runtime.LockOSThread()
 }
 
-func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+// Main runs the viewer with the arguments after "remoter view" (or after
+// the program name, for copies still installed as remoter-viewer). It must
+// be called from the main goroutine.
+func Main(args []string) {
+	if len(args) > 0 {
+		switch args[0] {
 		case "phone":
-			phoneMain(os.Args[2:])
+			phoneMain(args[1:])
 			return
 		case "phone-shot":
-			phoneShotMain(os.Args[2:])
+			phoneShotMain(args[1:])
 			return
 		}
 	}
-	password := flag.String("password", "", "session password (default: the last one used)")
-	id := flag.String("id", "", "computer ID, if the server has more than one")
-	fullscreen := flag.Bool("fullscreen", false, "start full screen")
-	tiles := flag.Bool("jpeg", false, "ask for JPEG tiles instead of H.264 video")
-	noUpdate := flag.Bool("no-update", false, "do not update automatically")
-	showVersion := flag.Bool("version", false, "print the version and exit")
-	check := flag.Bool("selftest", false, "check that the window and video libraries work here, then exit")
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "usage: remoter-viewer [flags] [server:port]\n")
-		flag.PrintDefaults()
+	flags := flag.NewFlagSet("remoter view", flag.ExitOnError)
+	password := flags.String("password", "", "session password (default: the last one used)")
+	id := flags.String("id", "", "computer ID, if the server has more than one")
+	fullscreen := flags.Bool("fullscreen", false, "start full screen")
+	tiles := flags.Bool("jpeg", false, "ask for JPEG tiles instead of H.264 video")
+	noUpdate := flags.Bool("no-update", false, "do not update automatically")
+	showVersion := flags.Bool("version", false, "print the version and exit")
+	check := flags.Bool("selftest", false, "check that the window and video libraries work here, then exit")
+	flags.Usage = func() {
+		fmt.Fprintf(flags.Output(), "usage: remoter view [flags] [server:port]\n")
+		flags.PrintDefaults()
 	}
-	flag.Parse()
+	flags.Parse(args)
 	if *showVersion {
 		fmt.Println(version())
 		return
@@ -76,6 +73,8 @@ func main() {
 		fmt.Println("ok")
 		return
 	}
+	// Opened from the desktop, a console window may have come with it.
+	hideConsole()
 	setupLog()
 
 	cfgPath, err := viewer.ConfigPath()
@@ -83,7 +82,7 @@ func main() {
 		log.Printf("settings will not be saved: %v", err)
 	}
 	cfg := viewer.LoadConfig(cfgPath)
-	server := flag.Arg(0)
+	server := flags.Arg(0)
 	if server != "" {
 		cfg.Server, cfg.ID = server, *id
 	}
@@ -116,7 +115,7 @@ func main() {
 	}
 	if a.run() {
 		log.Printf("restarting into the new version")
-		log.Fatalf("restart failed, start the viewer again: %v", update.Restart(exe, os.Environ()))
+		log.Fatalf("restart failed, start the viewer again: %v", restart(exe))
 	}
 }
 
@@ -132,17 +131,37 @@ func version() string {
 	return update.Version
 }
 
-// keepUpdated installs newer releases of the viewer as they are published.
+// restart starts the new version with the same arguments and exits. On
+// Windows it gets no console window, which the viewer does not need.
+func restart(exe string) error {
+	if runtime.GOOS != "windows" {
+		return update.Restart(exe, os.Environ())
+	}
+	cmd := exec.Command(exe, os.Args[1:]...)
+	update.HideWindow(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	os.Exit(0)
+	return nil
+}
+
+// keepUpdated installs newer releases of the app as they are published.
 // The window restarts into one the next time no session is open.
 func keepUpdated(exe string, updated *atomic.Bool) {
 	client := &http.Client{Timeout: 5 * time.Minute}
-	c := &update.Checker{Current: update.Version, Asset: assetName(), Client: client}
+	c := update.AppChecker(client)
 	for {
 		rel, asset, err := c.Latest(context.Background())
 		switch {
 		case err != nil:
 			log.Printf("update check: %v", err)
 			setUpdateState("update check failed: " + err.Error())
+		case rel != nil && update.InstalledVersion(context.Background(), exe) == rel.Tag:
+			// A host running this same file installed it already.
+			setUpdateState(rel.Tag + " installed, restarting when you disconnect")
+			updated.Store(true)
+			return
 		case rel != nil:
 			log.Printf("installing %s", rel.Tag)
 			setUpdateState("installing " + rel.Tag + "…")

@@ -68,7 +68,12 @@ jobs:
         name: Desktop viewer self-test
         shell: pwsh
         run: |
-          go build -o remoter-viewer.exe ./cmd/remoter-viewer
-          $out = ./remoter-viewer.exe -selftest | Out-String
+          go build -o remoter.exe ./cmd/remoter
+          $out = ./remoter.exe view -selftest | Out-String
+          $out
+          if ($out.Trim() -ne "ok") { exit 1 }
+          # A copy still named like the old viewer opens as the viewer.
+          Copy-Item remoter.exe remoter-viewer-windows-amd64.exe
+          $out = ./remoter-viewer-windows-amd64.exe -selftest | Out-String
           $out
           if ($out.Trim() -ne "ok") { exit 1 }

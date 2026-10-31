@@ -24,15 +24,16 @@ units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 mkdir -p "$bin" "$data/applications" "$units"
 
 # GitHub sorts releases by tag name, not date: pick the highest dev-N that
-# has the Linux build (what the built-in updater does too).
+# has the Linux build and remoter-version.txt, which only builds of the
+# whole app carry (what the built-in updater does too).
 url=$(curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=100" | python3 -c '
 import json, re, sys
 best = (-1, "")
 for r in json.load(sys.stdin):
     m = re.fullmatch(r"dev-(\d+)", r["tag_name"])
-    for a in r["assets"]:
-        if m and a["name"] == sys.argv[1] and int(m[1]) > best[0]:
-            best = (int(m[1]), a["browser_download_url"])
+    names = {a["name"]: a["browser_download_url"] for a in r["assets"]}
+    if m and sys.argv[1] in names and "remoter-version.txt" in names and int(m[1]) > best[0]:
+        best = (int(m[1]), names[sys.argv[1]])
 print(best[1])
 ' "$asset")
 if [ -z "$url" ]; then
