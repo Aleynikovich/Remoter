@@ -56,6 +56,7 @@ function connect(id, password) {
         if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "refresh", video: v }));
       });
       if (saver.on) sock.send(JSON.stringify({ type: "data_saver", ok: true }));
+      if (realPointer) sock.send(JSON.stringify({ type: "real_pointer", ok: true }));
       checkMetered();
       canvas.focus();
     } else if (msg.type === "cursor") {
@@ -541,6 +542,19 @@ $("saver").addEventListener("click", () => { setSaver(!saver.on); canvas.focus()
 $("saver-yes").addEventListener("click", () => { setSaver(true); canvas.focus(); });
 $("saver-always").addEventListener("click", () => { setSaver(true); storeSet("saverOnMetered", "1"); canvas.focus(); });
 $("saver-no").addEventListener("click", () => { $("saver-ask").hidden = true; canvas.focus(); });
+
+// The host draws its real pointer into the picture while a viewer asks;
+// the canvas cursor stays as the pointer that moves without lag.
+let realPointer = storeGet("realPointer") === "1";
+function showRealPointer() { $("real-pointer").textContent = `Real pointer: ${realPointer ? "on" : "off"}`; }
+showRealPointer();
+$("real-pointer").addEventListener("click", () => {
+  realPointer = !realPointer;
+  storeSet("realPointer", realPointer ? "1" : "");
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "real_pointer", ok: realPointer }));
+  showRealPointer();
+  canvas.focus();
+});
 
 // Quality: the host scales video down to keep up; Auto picks the scale.
 $("quality").addEventListener("change", () => {

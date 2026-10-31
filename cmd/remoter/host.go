@@ -44,9 +44,15 @@ type hostOptions struct {
 
 func newAgent(o hostOptions) *host.Agent {
 	screen := capture.NewScreen(o.display)
-	// Viewers draw their own pointer for speed; this one shows where the
-	// real pointer is.
-	screen.Overlay = cursor.Draw
+	// Viewers draw their own pointer for speed. The real one is drawn into
+	// the picture only while a viewer turns it on.
+	var realPointer atomic.Bool
+	screen.Overlay = func(img image.Image, origin image.Point) image.Image {
+		if !realPointer.Load() {
+			return img
+		}
+		return cursor.Draw(img, origin)
+	}
 	if runtime.GOOS == "windows" && !o.test {
 		go func() {
 			if err := childSelfTest("-capture-selftest"); err != nil {
@@ -91,7 +97,12 @@ func newAgent(o hostOptions) *host.Agent {
 		Quality:   o.quality,
 		Clipboard: clip,
 		Cursor:    cursor.Shape,
-		Monitors:  mons,
+		RealPointer: func(on bool) {
+			if realPointer.Swap(on) != on {
+				log.Printf("real pointer in the picture: %v", on)
+			}
+		},
+		Monitors: mons,
 		Diagnostics: func() string {
 			enc, _ := videoEncoder.Load().(string)
 			if enc == "" {

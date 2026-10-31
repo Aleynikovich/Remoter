@@ -126,6 +126,9 @@ type Agent struct {
 	// Cursor, if set, returns the pointer shape as a CSS cursor name. The
 	// viewer shows it on its own pointer, which moves without lag.
 	Cursor func() string
+	// RealPointer, if set, is told whether viewers want the host's real
+	// mouse pointer drawn into the picture. It is off until one asks.
+	RealPointer func(on bool)
 	// Monitors, if set, lets viewers switch between displays.
 	Monitors Monitors
 	// NewVideo, if set, starts an H.264 encoder for w×h captures at kbps
@@ -167,6 +170,7 @@ type flow struct {
 	full    bool
 	viewers map[string]*viewerState
 	savers  map[string]bool // viewers that asked for data saver
+	pointer map[string]bool // viewers that asked to see the real pointer
 	wake    chan struct{}
 	sentLog [2 * maxWindow]sentUpdate // by seq % len
 }
@@ -246,6 +250,7 @@ func (f *flow) leave(viewer string) {
 	f.mu.Lock()
 	delete(f.viewers, viewer)
 	delete(f.savers, viewer)
+	delete(f.pointer, viewer)
 	f.mu.Unlock()
 	f.poke()
 }
@@ -270,6 +275,27 @@ func (f *flow) saver() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.savers) > 0
+}
+
+// setPointer records whether a viewer wants the real pointer drawn.
+func (f *flow) setPointer(viewer string, on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if on {
+		if f.pointer == nil {
+			f.pointer = map[string]bool{}
+		}
+		f.pointer[viewer] = true
+	} else {
+		delete(f.pointer, viewer)
+	}
+}
+
+// showPointer reports whether any viewer wants the real pointer drawn.
+func (f *flow) showPointer() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.pointer) > 0
 }
 
 func (f *flow) ack(viewer string, seq uint32) {
@@ -516,6 +542,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.sendSaver(ctx, conn); err != nil {
 				return err
 			}
+			if err := send(ctx, conn, protocol.Message{Type: protocol.TypeRealPointer, OK: a.flow.showPointer()}); err != nil {
+				return err
+			}
 		case protocol.TypeSelectDisplay:
 			if a.Monitors == nil {
 				continue
@@ -551,6 +580,11 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.sendQuality(ctx, conn); err != nil {
 				return err
 			}
+		case protocol.TypeRealPointer:
+			a.flow.setPointer(m.Viewer, m.OK)
+			if err := a.pointerChanged(ctx, conn); err != nil {
+				return err
+			}
 		case protocol.TypeQuality:
 			if a.res.set(m.Text) {
 				log.Printf("viewer %s set quality %s", m.Viewer, m.Text)
@@ -561,7 +595,13 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.setClipboard(m.Text)
 		case protocol.TypeViewerLeft:
 			was := a.flow.saver()
+			pointer := a.flow.showPointer()
 			a.flow.leave(m.Viewer)
+			if pointer && !a.flow.showPointer() {
+				if err := a.pointerChanged(ctx, conn); err != nil {
+					return err
+				}
+			}
 			if was && !a.flow.saver() {
 				log.Print("data saver off: its viewer left")
 				if err := a.sendSaver(ctx, conn); err != nil {
@@ -960,6 +1000,16 @@ func (a *Agent) scale() int {
 func (a *Agent) sendQuality(ctx context.Context, conn *websocket.Conn) error {
 	mode, _ := a.res.current()
 	return send(ctx, conn, protocol.Message{Type: protocol.TypeQuality, Text: mode, Scale: a.scale()})
+}
+
+// pointerChanged applies whether the real pointer is drawn and tells the
+// viewers.
+func (a *Agent) pointerChanged(ctx context.Context, conn *websocket.Conn) error {
+	on := a.flow.showPointer()
+	if a.RealPointer != nil {
+		a.RealPointer(on)
+	}
+	return send(ctx, conn, protocol.Message{Type: protocol.TypeRealPointer, OK: on})
 }
 
 // sendSaver tells viewers whether data saver is on.
