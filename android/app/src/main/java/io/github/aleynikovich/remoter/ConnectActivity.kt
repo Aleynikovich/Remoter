@@ -43,13 +43,15 @@ class ConnectActivity : Activity() {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
         buildViews()
-        checkForUpdate()
         startSharing()
     }
 
     override fun onResume() {
         super.onResume()
         showComputers()
+        // Android keeps the app alive for days, so look again whenever the
+        // start screen comes back, not only when it is first created.
+        checkForUpdate()
     }
 
     override fun onDestroy() {
@@ -444,8 +446,12 @@ class ConnectActivity : Activity() {
 
     // ---- Updates ----
 
+    private var lastUpdateCheck = 0L
+
     private fun checkForUpdate() {
         if (BuildConfig.VERSION_CODE <= 0) return // local build
+        if (update != null || android.os.SystemClock.elapsedRealtime() - lastUpdateCheck < 60_000) return
+        lastUpdateCheck = android.os.SystemClock.elapsedRealtime()
         pool.execute {
             val u = try {
                 Updater.check(BuildConfig.VERSION_CODE)
