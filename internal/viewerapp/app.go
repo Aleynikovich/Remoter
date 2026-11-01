@@ -323,7 +323,15 @@ func (a *app) handle(ev *sdlEvent) {
 		}
 	case sdlMouseButtonDown, sdlMouseButtonUp:
 		a.mouse = [2]float64{float64(ev.i32(20)), float64(ev.i32(24))}
-		if a.client != nil && a.toolbarClick(ev.typ() == sdlMouseButtonDown) {
+		down := ev.typ() == sdlMouseButtonDown
+		// A release of a button held on the remote always goes there, even
+		// over the toolbar; otherwise the remote keeps the button down and
+		// the window that got the press captures every later click.
+		if !down && a.remoteHolds(int(ev.u8(16))) {
+			a.mouseButton(int(ev.u8(16)), false)
+			return
+		}
+		if a.client != nil && a.toolbarClick(down) {
 			return
 		}
 		if a.drawing {
@@ -1006,6 +1014,13 @@ func (a *app) mouseButton(sdlButton int, down bool) {
 	}
 	a.buttons[button] = down
 	a.client.Input(protocol.Input{Kind: kind, Button: button, X: x, Y: y})
+}
+
+// remoteHolds reports whether an SDL mouse button is held down on the
+// remote computer.
+func (a *app) remoteHolds(sdlButton int) bool {
+	b := sdlButton - 1
+	return a.connected && b >= 0 && b <= 2 && a.buttons[b]
 }
 
 // flushMove sends the latest pointer position, once per pass of the event
