@@ -112,6 +112,16 @@ type app struct {
 	allShown bool   // the host can show every display at once, as display number displays
 	noVideo  string // why the host sends JPEG instead of H.264, if it says
 	display  int
+	sizes    []protocol.Size  // each display's size, then all of them together
+	region   *protocol.Region // the part of the display the host shows, nil for all
+
+	drawing  bool       // the user is dragging out an area for a virtual monitor
+	dragging bool       // the mouse button is down while drawing
+	dragFrom [2]float64 // where the drag started and is now, 0..1 of the picture
+	dragTo   [2]float64
+	zoomed   bool       // the picture is drawn zoomed, see placePicture
+	zoomSrc  [4]float64 // the part of the picture shown, in its pixels
+	picSize  image.Point
 
 	notice      string
 	noticeUntil time.Time
@@ -299,10 +309,27 @@ func (a *app) handle(ev *sdlEvent) {
 		}
 	case sdlMouseMotion:
 		a.mouse = [2]float64{float64(ev.i32(20)), float64(ev.i32(24))}
-		a.moved = a.connected && !a.toolbarMotion()
+		onBar := a.toolbarMotion()
+		if a.drawing {
+			if a.dragging {
+				a.dragTo[0], a.dragTo[1] = a.remotePoint()
+				a.dirty = true
+			}
+			return
+		}
+		a.moved = a.connected && !onBar
+		if a.cfg.Zoom && a.connected {
+			a.dirty = true // the zoomed view follows the pointer
+		}
 	case sdlMouseButtonDown, sdlMouseButtonUp:
 		a.mouse = [2]float64{float64(ev.i32(20)), float64(ev.i32(24))}
 		if a.client != nil && a.toolbarClick(ev.typ() == sdlMouseButtonDown) {
+			return
+		}
+		if a.drawing {
+			if ev.u8(16) == 1 {
+				a.drawButton(ev.typ() == sdlMouseButtonDown)
+			}
 			return
 		}
 		a.mouseButton(int(ev.u8(16)), ev.typ() == sdlMouseButtonDown)
@@ -563,6 +590,7 @@ func (a *app) disconnect(status string) {
 	a.mode = modeNone
 	a.acks = a.acks[:0]
 	a.notice = ""
+	a.displays, a.sizes, a.region, a.drawing, a.dragging, a.zoomed = 0, nil, nil, false, false, false
 	isErr := status != "" && status != "Disconnected."
 	a.form.status, a.form.err = status, isErr
 	a.list.status, a.list.isErr = status, isErr
@@ -769,6 +797,7 @@ func (a *app) hostMessage(m protocol.Message) {
 		a.setCursor(m.Cursor)
 	case protocol.TypeDisplays:
 		a.displays, a.display, a.allShown = m.Count, m.Display, m.All
+		a.sizes, a.region = m.Sizes, m.Region.Clean()
 		a.dirty = true
 	case protocol.TypeDiagnostics:
 		if !a.diagAsked.IsZero() { // otherwise another viewer asked
@@ -837,6 +866,12 @@ func (a *app) sessionKey(ev *sdlEvent, down bool) {
 	sc, sym, mod := ev.i32(16), ev.i32(20), ev.u16(24)
 	if !down && a.swallow[sc] {
 		delete(a.swallow, sc)
+		return
+	}
+	if a.drawing {
+		if down && sc == scEscape {
+			a.cancelDrawing()
+		}
 		return
 	}
 	// Viewer shortcuts: Ctrl+Alt plus a key the remote rarely needs.
@@ -914,28 +949,22 @@ func (a *app) shortcut(sc int32) bool {
 		}
 		a.setQuality(qualities[(slices.Index(qualities, cur)+1)%len(qualities)])
 	case scPageDown, scPageUp:
-		if a.displays < 2 || !a.connected {
+		if !a.connected {
 			return true
 		}
-		n := a.monitorChoices()
 		step := 1
 		if sc == scPageUp {
-			step = n - 1
+			step = -1
 		}
-		a.selectDisplay((a.display + step) % n)
+		a.stepView(step)
+	case scZ:
+		if a.connected {
+			a.setZoom(!a.cfg.Zoom)
+		}
 	default:
 		return false
 	}
 	return true
-}
-
-// monitorChoices is how many views the host offers: each display, and all
-// of them at once when it can.
-func (a *app) monitorChoices() int {
-	if a.allShown {
-		return a.displays + 1
-	}
-	return a.displays
 }
 
 // monitorLabel names a view for the toolbar and notices.
@@ -944,18 +973,6 @@ func (a *app) monitorLabel(d int) string {
 		return "All monitors"
 	}
 	return fmt.Sprintf("Monitor %d of %d", d+1, a.displays)
-}
-
-// selectDisplay asks the host to show display d, or every display when d
-// is one past the last.
-func (a *app) selectDisplay(d int) {
-	if d < 0 || d >= a.monitorChoices() {
-		return
-	}
-	a.releaseHeld()
-	a.display = d
-	a.client.Send(protocol.Message{Type: protocol.TypeSelectDisplay, Display: d})
-	a.showNotice(a.monitorLabel(d), 2*time.Second)
 }
 
 func (a *app) mouseButton(sdlButton int, down bool) {
@@ -1004,7 +1021,13 @@ func (a *app) flushMove() {
 }
 
 func (a *app) remotePoint() (float64, float64) {
-	return viewer.Normalize(a.dst, a.mouse[0]*a.scale, a.mouse[1]*a.scale)
+	x, y := viewer.Normalize(a.dst, a.mouse[0]*a.scale, a.mouse[1]*a.scale)
+	if a.zoomed && a.picSize.X > 0 && a.picSize.Y > 0 {
+		z := a.zoomSrc
+		x = (z[0] + x*(z[2]-z[0])) / float64(a.picSize.X)
+		y = (z[1] + y*(z[3]-z[1])) / float64(a.picSize.Y)
+	}
+	return x, y
 }
 
 // releaseHeld lets go of every key and button still down on the remote,
@@ -1132,9 +1155,10 @@ func (a *app) render() {
 			tex, size = a.tileTex, a.tileSize
 		}
 		if tex != 0 {
-			a.dst = viewer.Fit(size.X, size.Y, out)
+			src := a.placePicture(size, out)
 			d := sdlRect{int32(a.dst.Min.X), int32(a.dst.Min.Y), int32(a.dst.Dx()), int32(a.dst.Dy())}
-			sdl.RenderCopy(a.ren, tex, nil, &d)
+			sdl.RenderCopy(a.ren, tex, src, &d)
+			a.drawSelection()
 		}
 		a.drawToolbar(out)
 	}

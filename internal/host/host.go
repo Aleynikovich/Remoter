@@ -95,11 +95,17 @@ type VideoEncoder interface {
 }
 
 // Monitors switches the shared display. With two or more displays, display
-// Count shows all of them at once.
+// Count shows all of them at once. A region shows only part of a display: a
+// virtual monitor.
 type Monitors interface {
 	Count() int
 	Current() int
-	Select(display int) error
+	// Region is the part of the current display shown, or nil for all.
+	Region() *protocol.Region
+	// Sizes are the displays' sizes in pixels, then every display's
+	// together.
+	Sizes() []protocol.Size
+	Select(display int, region *protocol.Region) error
 }
 
 // LogInput logs input events instead of applying them.
@@ -549,9 +555,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			if a.Monitors == nil {
 				continue
 			}
-			if err := a.Monitors.Select(m.Display); err != nil {
+			if err := a.Monitors.Select(m.Display, m.Region); err != nil {
 				log.Printf("viewer %s: select display %d: %v", m.Viewer, m.Display, err)
 				continue
+			}
+			if r := a.Monitors.Region(); r != nil {
+				log.Printf("viewer %s: showing part of display %d: %.3f,%.3f %.3fx%.3f", m.Viewer, m.Display, r.X, r.Y, r.W, r.H)
 			}
 			a.flow.refresh()
 			if err := a.sendDisplays(ctx, conn); err != nil {
@@ -1023,7 +1032,8 @@ func (a *Agent) sendDisplays(ctx context.Context, conn *websocket.Conn) error {
 		return nil
 	}
 	n := a.Monitors.Count()
-	return send(ctx, conn, protocol.Message{Type: protocol.TypeDisplays, Count: n, Display: a.Monitors.Current(), All: n > 1})
+	return send(ctx, conn, protocol.Message{Type: protocol.TypeDisplays, Count: n, Display: a.Monitors.Current(), All: n > 1,
+		Sizes: a.Monitors.Sizes(), Region: a.Monitors.Region()})
 }
 
 // watchClipboard sends the host clipboard to viewers whenever it changes.

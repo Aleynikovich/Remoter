@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/kbinani/screenshot"
+
+	"github.com/aleynikovich/remoter/internal/protocol"
 )
 
 // Source produces screen images. A source may draw into an image again
@@ -30,6 +32,8 @@ type Screen struct {
 
 	mu      sync.Mutex
 	display int
+	region  *protocol.Region // the part of the display shown, nil for all of it
+	crop    *image.RGBA      // reused when a capture has to be copied to crop it
 	native  nativeSource
 	all     *allScreens
 	started bool
@@ -64,6 +68,22 @@ func (s *Screen) SetDisplay(display int) {
 	s.closeLocked()
 }
 
+// Region returns the part of the display being captured, or nil for all
+// of it.
+func (s *Screen) Region() *protocol.Region {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.region
+}
+
+// SetRegion captures only part of the display (or of every display, for
+// All) from the next capture on: a virtual monitor. nil means all of it.
+func (s *Screen) SetRegion(r *protocol.Region) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.region = r.Clean()
+}
+
 func (s *Screen) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,10 +100,10 @@ func (s *Screen) closeLocked() {
 	s.native, s.all, s.started = nil, nil, false
 }
 
-// Capture grabs the whole display.
+// Capture grabs the display, or the region of it set with SetRegion.
 func (s *Screen) Capture() (image.Image, error) {
 	img, _, err := s.capture(-1)
-	if err != nil || s.Overlay == nil {
+	if err != nil {
 		return img, err
 	}
 	origin := img.Bounds().Min
@@ -91,8 +111,47 @@ func (s *Screen) Capture() (image.Image, error) {
 	if s.display == All && s.all != nil {
 		origin = s.all.union.Min
 	}
+	region := s.region
 	s.mu.Unlock()
+	if region != nil {
+		var off image.Point
+		img, off = s.cropTo(img, region)
+		origin = origin.Add(off)
+	}
+	if s.Overlay == nil {
+		return img, nil
+	}
 	return s.Overlay(img, origin), nil
+}
+
+// cropTo returns the region of img, and how far its top-left pixel is from
+// img's. An RGBA capture is cropped without copying.
+func (s *Screen) cropTo(img image.Image, region *protocol.Region) (image.Image, image.Point) {
+	b := img.Bounds()
+	r := cropRect(b, region)
+	if r.Empty() || r == b {
+		return img, image.Point{}
+	}
+	if rgba, ok := img.(*image.RGBA); ok {
+		return rgba.SubImage(r), r.Min.Sub(b.Min)
+	}
+	if s.crop == nil || s.crop.Rect != r {
+		s.crop = image.NewRGBA(r)
+	}
+	draw.Draw(s.crop, r, img, r.Min, draw.Src)
+	return s.crop, r.Min.Sub(b.Min)
+}
+
+// cropRect is the region of b, at least 16 pixels each way and with an even
+// width and height, which video encoders need.
+func cropRect(b image.Rectangle, region *protocol.Region) image.Rectangle {
+	r := region.Of(b)
+	if r.Dx() < 16 || r.Dy() < 16 {
+		return b
+	}
+	r.Max.X -= r.Dx() % 2
+	r.Max.Y -= r.Dy() % 2
+	return r
 }
 
 // capture grabs the display. A capturer that can tell waits up to wait for

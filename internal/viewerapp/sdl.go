@@ -92,6 +92,7 @@ var sdl struct {
 	SetWindowPosition      func(win uintptr, x, y int32)
 	GetWindowDisplayIndex  func(win uintptr) int32
 	GetDisplayUsableBounds func(display int32, r *sdlRect) int32
+	GetDisplayBounds       func(display int32, r *sdlRect) int32
 	SetWindowKeyboardGrab  func(win uintptr, grabbed int32)
 	SetWindowMouseGrab     func(win uintptr, grabbed int32)
 	RaiseWindow            func(win uintptr)
@@ -157,6 +158,7 @@ func loadSDL() error {
 	bind(&sdl.SetWindowPosition, "SDL_SetWindowPosition")
 	bind(&sdl.GetWindowDisplayIndex, "SDL_GetWindowDisplayIndex")
 	bind(&sdl.GetDisplayUsableBounds, "SDL_GetDisplayUsableBounds")
+	bind(&sdl.GetDisplayBounds, "SDL_GetDisplayBounds")
 	bind(&sdl.SetWindowKeyboardGrab, "SDL_SetWindowKeyboardGrab")
 	bind(&sdl.SetWindowMouseGrab, "SDL_SetWindowMouseGrab")
 	bind(&sdl.RaiseWindow, "SDL_RaiseWindow")
