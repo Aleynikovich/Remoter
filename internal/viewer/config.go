@@ -27,6 +27,14 @@ type Config struct {
 	// RealPointer asks the host to draw its real mouse pointer into the
 	// picture, next to the viewer's own.
 	RealPointer bool `json:"realPointer,omitempty"`
+	// Split is how displays are cut into virtual monitors: one of Splits
+	// ("" is "fit").
+	Split string `json:"split,omitempty"`
+	// Areas are virtual monitors the user drew.
+	Areas []Area `json:"areas,omitempty"`
+	// Zoom shows a part of the picture that fills the window and follows
+	// the pointer, instead of the whole picture with black bars.
+	Zoom bool `json:"zoom,omitempty"`
 }
 
 // PasswordFor is the password to try for server: the one that worked last

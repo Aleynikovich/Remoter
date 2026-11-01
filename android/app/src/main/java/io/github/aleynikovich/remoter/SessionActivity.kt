@@ -89,6 +89,8 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
     private var displayCount = 1
     private var display = 0 // displayCount means every monitor at once
     private var canShowAll = false
+    private var displaySizes = listOf<Pair<Int, Int>>()
+    private var region: Views.Region? = null // the part of the display shown, null for all of it
     private var lastClipboard: String? = null
 
     private val frames = AtomicInteger()
@@ -531,17 +533,52 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
         }
     }
 
+    /** The shape of this screen, which "fit" virtual monitors take. */
+    private fun viewAspect(): Double {
+        val w = screen.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val h = screen.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        return if (h > 0) w.toDouble() / h else 16.0 / 9
+    }
+
+    private fun views() = Views.list(displayCount, canShowAll, displaySizes, viewAspect(), prefs.split)
+
+    private fun currentView(vs: List<Views.View>) =
+        vs.indexOfFirst { it.display == display && (if (it.region == null) region == null else it.region.same(region)) }
+
     private fun pickDisplay() {
-        val choices = displayCount + if (canShowAll) 1 else 0
-        val names = Array(choices) {
-            (if (it < displayCount) "Monitor ${it + 1}" else "All monitors") + if (it == display) " (showing)" else ""
-        }
+        val vs = views()
+        val cur = currentView(vs)
+        val names = vs.mapIndexed { i, v -> v.label + if (i == cur) " (showing)" else "" } +
+            "Split: ${Views.splitLabel(prefs.split)} (change)"
         AlertDialog.Builder(this)
             .setTitle("Show which monitor?")
-            .setItems(names) { _, which ->
-                client?.send(JSONObject().put("type", "select_display").put("display", which))
+            .setItems(names.toTypedArray()) { _, which ->
+                if (which >= vs.size) {
+                    val i = Views.splits.indexOf(prefs.split)
+                    prefs.split = Views.splits[(i + 1) % Views.splits.size]
+                    updateDisplayButton()
+                    pickDisplay()
+                    return@setItems
+                }
+                val v = vs[which]
+                val m = JSONObject().put("type", "select_display").put("display", v.display)
+                v.region?.let { m.put("region", it.toJson()) }
+                client?.send(m)
             }
             .show()
+    }
+
+    private fun updateDisplayButton() {
+        val vs = views()
+        val cur = currentView(vs)
+        displayButton.text = when {
+            cur >= 0 && displayCount == 1 -> "Monitor: " + vs[cur].label
+            cur >= 0 -> vs[cur].label
+            display >= displayCount -> "All monitors"
+            else -> "Monitor ${display + 1}/$displayCount"
+        }
+        // Worth showing with several monitors, or one that can be cut up.
+        displayButton.visibility = if (vs.size > 1 || region != null) View.VISIBLE else View.GONE
     }
 
     private val statsTick = object : Runnable {
@@ -665,8 +702,13 @@ class SessionActivity : Activity(), RelayClient.Listener, ScreenView.Remote {
                 displayCount = msg.optInt("count", 1).coerceAtLeast(1)
                 display = msg.optInt("display", 0)
                 canShowAll = msg.optBoolean("all", false)
-                displayButton.text = if (display >= displayCount) "All monitors" else "Monitor ${display + 1}/$displayCount"
-                displayButton.visibility = if (displayCount > 1) View.VISIBLE else View.GONE
+                val sizes = msg.optJSONArray("sizes")
+                displaySizes = if (sizes == null) emptyList() else List(sizes.length()) {
+                    val o = sizes.getJSONObject(it)
+                    o.optInt("w") to o.optInt("h")
+                }
+                region = Views.Region.from(msg.optJSONObject("region"))
+                updateDisplayButton()
             }
             "clipboard" -> {
                 val text = msg.optString("text")

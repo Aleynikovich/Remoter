@@ -70,7 +70,15 @@ func draw(img image.Image, origin image.Point) image.Image {
 		dst = image.NewRGBA(b)
 		bufs[turn] = dst
 	}
-	copy(dst.Pix, src.Pix)
+	if src.Stride == dst.Stride {
+		copy(dst.Pix, src.Pix)
+	} else {
+		// A part of a bigger picture (a virtual monitor): row by row.
+		w := b.Dx() * 4
+		for y := range b.Dy() {
+			copy(dst.Pix[y*dst.Stride:y*dst.Stride+w], src.Pix[y*src.Stride:y*src.Stride+w])
+		}
+	}
 	for j := 0; j < pic.h; j++ {
 		y := y0 + j
 		if y < b.Min.Y || y >= b.Max.Y {

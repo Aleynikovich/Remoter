@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"image"
 	"image/jpeg"
+	"math"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -251,6 +252,7 @@ func TestClipboardIsSharedBothWays(t *testing.T) {
 type fakeMonitors struct {
 	mu      sync.Mutex
 	current int
+	region  *protocol.Region
 }
 
 func (m *fakeMonitors) Count() int { return 2 }
@@ -261,10 +263,20 @@ func (m *fakeMonitors) Current() int {
 	return m.current
 }
 
-func (m *fakeMonitors) Select(d int) error {
+func (m *fakeMonitors) Region() *protocol.Region {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.current = d
+	return m.region
+}
+
+func (m *fakeMonitors) Sizes() []protocol.Size {
+	return []protocol.Size{{W: 5120, H: 1440}, {W: 1920, H: 1080}, {W: 7040, H: 1440}}
+}
+
+func (m *fakeMonitors) Select(d int, r *protocol.Region) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.current, m.region = d, r.Clean()
 	return nil
 }
 
@@ -327,6 +339,22 @@ func TestCursorAndDisplaySwitching(t *testing.T) {
 	sendJSON(t, c, protocol.Message{Type: protocol.TypeSelectDisplay, Display: 1})
 	if m := readText(t, c, protocol.TypeDisplays); m.Display != 1 || mons.Current() != 1 {
 		t.Fatalf("got %+v, want the second display selected", m)
+	}
+	if len(displays.Sizes) != 3 || displays.Sizes[0].W != 5120 {
+		t.Fatalf("got sizes %+v", displays.Sizes)
+	}
+
+	// A virtual monitor: the right part of the first display.
+	right := &protocol.Region{X: 0.55, W: 0.45, H: 1}
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeSelectDisplay, Display: 0, Region: right})
+	m := readText(t, c, protocol.TypeDisplays)
+	if m.Display != 0 || m.Region == nil || math.Abs(m.Region.X-0.55) > 1e-9 || math.Abs(m.Region.W-0.45) > 1e-9 || m.Region.H != 1 {
+		t.Fatalf("got %+v region %+v, want the right part of the first display", m, m.Region)
+	}
+	// Selecting a display without a region shows all of it again.
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeSelectDisplay, Display: 0})
+	if m := readText(t, c, protocol.TypeDisplays); m.Region != nil {
+		t.Fatalf("region %+v stayed", m.Region)
 	}
 }
 

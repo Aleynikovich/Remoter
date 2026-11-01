@@ -62,6 +62,11 @@ class Prefs(context: Context) {
         get() = p.getBoolean("realPointer", false)
         set(v) = p.edit().putBoolean("realPointer", v).apply()
 
+    /** How displays are cut into virtual monitors: fit, halves, thirds or off. */
+    var split: String
+        get() = p.getString("split", "fit")!!
+        set(v) = p.edit().putString("split", v).apply()
+
     companion object {
         const val DEFAULT_COMPUTER = "100.102.208.35:8080"
         const val DEFAULT_PASSWORD = "root"

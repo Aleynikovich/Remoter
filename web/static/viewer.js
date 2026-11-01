@@ -73,7 +73,7 @@ function connect(id, password) {
     } else if (msg.type === "video") {
       stats.hostWhy = msg.text || "";
     } else if (msg.type === "displays") {
-      showDisplays(msg.count || 1, msg.display || 0, !!msg.all);
+      showDisplays(msg.count || 1, msg.display || 0, !!msg.all, msg.sizes, msg.region);
     } else if (msg.type === "clipboard") {
       remoteClipboard(msg.text);
     } else if (msg.type === "error") {
@@ -412,19 +412,54 @@ $("scale").addEventListener("click", () => {
   canvas.focus();
 });
 
-// Display switching on hosts with several monitors.
-// Option number count, when the host offers it, shows every monitor at once.
-function showDisplays(count, current, all) {
+// Display switching: each monitor, its virtual monitors (pieces shaped like
+// this screen, for wide monitors; see internal/viewer/views.go), and every
+// monitor at once when the host offers it (display number count).
+let views = [];
+function screenParts(w, h) {
+  const view = screen.width / screen.height;
+  if (!w || !h || !view) return [];
+  const aspect = w / h;
+  const wide = aspect >= view;
+  const r = wide ? aspect / view : view / aspect;
+  if (r < 1.3) return [];
+  const n = Math.ceil(r - 0.15), size = 1 / r;
+  const names = n === 2 ? (wide ? ["Left", "Right"] : ["Top", "Bottom"]) : n === 3 ? (wide ? ["Left", "Centre", "Right"] : ["Top", "Middle", "Bottom"]) : [];
+  return Array.from({ length: n }, (_, i) => {
+    const start = n > 1 ? (i * (1 - size)) / (n - 1) : 0;
+    const region = wide ? { x: start, y: 0, w: size, h: 1 } : { x: 0, y: start, w: 1, h: size };
+    return { region, name: names[i] || `Part ${i + 1}` };
+  });
+}
+function sameRegion(a, b) {
+  if (!a || !b) return !a && !b;
+  return ["x", "y", "w", "h"].every((k) => Math.abs(a[k] - b[k]) < 0.002);
+}
+function showDisplays(count, current, all, sizes, region) {
   const sel = $("display");
-  sel.hidden = count < 2;
-  const choices = count + (all ? 1 : 0);
-  if (sel.options.length !== choices) {
-    sel.replaceChildren(...Array.from({ length: choices }, (_, i) => new Option(i < count ? `Display ${i + 1}` : "All displays", i)));
+  views = [];
+  const n = count + (all && count > 1 ? 1 : 0);
+  for (let d = 0; d < n; d++) {
+    const name = count === 1 ? "Whole screen" : d < count ? `Display ${d + 1}` : "All displays";
+    views.push({ display: d, region: null, label: name });
+    const s = (sizes || [])[d];
+    if (!s) continue;
+    for (const p of screenParts(s.w, s.h)) {
+      views.push({ display: d, region: p.region, label: count > 1 ? `${name} · ${p.name}` : p.name });
+    }
   }
-  sel.value = current;
+  sel.hidden = views.length < 2;
+  sel.replaceChildren(...views.map((v, i) => new Option(v.label, i)));
+  const cur = views.findIndex((v) => v.display === current && sameRegion(v.region, region));
+  sel.value = Math.max(cur, 0);
 }
 $("display").addEventListener("change", (e) => {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "select_display", display: Number(e.target.value) }));
+  const v = views[Number(e.target.value)];
+  if (v && ws && ws.readyState === WebSocket.OPEN) {
+    const m = { type: "select_display", display: v.display };
+    if (v.region) m.region = v.region;
+    ws.send(JSON.stringify(m));
+  }
   canvas.focus();
 });
 document.addEventListener("paste", (e) => {

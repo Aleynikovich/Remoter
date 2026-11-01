@@ -90,15 +90,18 @@ func (a *app) toolbarItems() []tbItem {
 	}
 	if t.monitors {
 		items := []tbItem{{"monitors", "‹ Back"}}
-		for d := range a.monitorChoices() {
-			label := a.monitorLabel(d)
-			if d < a.displays {
-				label = fmt.Sprintf("Monitor %d", d+1)
-			}
-			if d == a.display {
+		vs := a.views()
+		cur := a.currentView(vs)
+		for i, v := range vs {
+			label := v.Label
+			if i == cur {
 				label = "• " + label
 			}
-			items = append(items, tbItem{fmt.Sprintf("mon:%d", d), label})
+			items = append(items, tbItem{fmt.Sprintf("view:%d", i), label})
+		}
+		items = append(items, tbItem{"split", "Split: " + viewer.SplitLabel(a.split())}, tbItem{"draw", "Draw area…"})
+		if a.hasAreas() {
+			items = append(items, tbItem{"forget", "Forget drawn areas"})
 		}
 		return items
 	}
@@ -123,13 +126,18 @@ func (a *app) toolbarItems() []tbItem {
 		pointer = "Real pointer: on"
 	}
 	items := []tbItem{{"picture", picture + "…"}, {"saver", saver + " (" + dataText(a.sessionBytes) + " used)"}, {"pointer", pointer}}
-	if a.displays > 1 {
-		label := fmt.Sprintf("Monitor %d/%d", a.display+1, a.displays)
-		if a.display >= a.displays {
-			label = "All monitors"
+	if a.displays > 0 {
+		label := a.viewLabel()
+		if a.displays == 1 {
+			label = "Monitor: " + label
 		}
 		items = append(items, tbItem{"monitors", label + "…"})
 	}
+	zoom := "Zoom: off"
+	if a.cfg.Zoom {
+		zoom = "Zoom: follow mouse"
+	}
+	items = append(items, tbItem{"zoom", zoom})
 	full := "Full screen"
 	if a.fullscreen() {
 		full = "Leave full screen"
@@ -255,6 +263,15 @@ func (a *app) toolbarAction(id string) {
 		a.closeToolbar()
 	case "monitors":
 		t.monitors = !t.monitors
+	case "split":
+		a.nextSplit()
+	case "draw":
+		a.closeToolbar()
+		a.startDrawing()
+	case "forget":
+		a.forgetAreas()
+	case "zoom":
+		a.setZoom(!a.cfg.Zoom)
 	case "fullscreen":
 		a.closeToolbar()
 		a.shortcut(scEnter)
@@ -282,10 +299,11 @@ func (a *app) toolbarAction(id string) {
 	case "close":
 		a.closeToolbar()
 	default:
-		if d, ok := strings.CutPrefix(id, "mon:"); ok {
+		if d, ok := strings.CutPrefix(id, "view:"); ok {
 			a.closeToolbar()
-			if n, err := strconv.Atoi(d); err == nil {
-				a.selectDisplay(n)
+			vs := a.views()
+			if n, err := strconv.Atoi(d); err == nil && n >= 0 && n < len(vs) {
+				a.selectView(vs[n])
 			}
 			break
 		}

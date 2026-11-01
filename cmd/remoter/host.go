@@ -25,6 +25,7 @@ import (
 	"github.com/aleynikovich/remoter/internal/host"
 	"github.com/aleynikovich/remoter/internal/input"
 	"github.com/aleynikovich/remoter/internal/mf"
+	"github.com/aleynikovich/remoter/internal/protocol"
 	"github.com/aleynikovich/remoter/internal/update"
 )
 
@@ -76,7 +77,9 @@ func newAgent(o hostOptions) *host.Agent {
 				in = native
 			}
 		}
-		mons = monitors{screen, in}
+		region := &input.InRegion{Handler: in}
+		in = region
+		mons = monitors{screen, region}
 	}
 	var clip clipboard.Clipboard
 	if !o.noClipboard && !o.viewOnly {
@@ -262,7 +265,7 @@ func runHost(ctx context.Context, a *host.Agent) {
 // index one past the last display shows all of them at once.
 type monitors struct {
 	screen *capture.Screen
-	input  input.Handler
+	input  *input.InRegion
 }
 
 func (m monitors) Count() int { return len(capture.Displays()) }
@@ -274,7 +277,22 @@ func (m monitors) Current() int {
 	return m.Count()
 }
 
-func (m monitors) Select(display int) error {
+func (m monitors) Region() *protocol.Region { return m.screen.Region() }
+
+func (m monitors) Sizes() []protocol.Size {
+	ds := capture.Displays()
+	var sizes []protocol.Size
+	for _, d := range ds {
+		sizes = append(sizes, protocol.Size{W: d.Dx(), H: d.Dy()})
+	}
+	if len(ds) > 1 {
+		u := capture.Union(ds)
+		sizes = append(sizes, protocol.Size{W: u.Dx(), H: u.Dy()})
+	}
+	return sizes
+}
+
+func (m monitors) Select(display int, region *protocol.Region) error {
 	n := len(capture.Displays())
 	if display < 0 || display > n || display == n && n < 2 {
 		return errors.New("no such display")
@@ -282,8 +300,12 @@ func (m monitors) Select(display int) error {
 	if display == n {
 		display = capture.All
 	}
+	region = region.Clean()
 	m.input.SetDisplay(displayBounds(display))
+	// Input goes to the same part of the display as the picture shows.
+	m.input.SetRegion(region)
 	m.screen.SetDisplay(display)
+	m.screen.SetRegion(region)
 	return nil
 }
 

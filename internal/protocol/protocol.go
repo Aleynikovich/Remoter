@@ -9,6 +9,8 @@
 // the host never runs more than a few updates ahead of the slowest viewer.
 package protocol
 
+import "image"
+
 // Message types.
 const (
 	// host -> server: ask for a session ID. ID, if set, is the one the host
@@ -41,6 +43,10 @@ const (
 	// host -> server -> every viewer: the host has Count displays and is
 	// showing Display (0-based). With All set the host can also show every
 	// display at once, as Display Count; a viewer selects that the same way.
+	// Sizes holds each display's size in pixels (and every display's
+	// together, last, with All), so viewers can split a display into
+	// virtual monitors; Region is the part of Display being shown, if not
+	// all of it.
 	TypeDisplays = "displays"
 	// host -> server -> every viewer: why the host sends JPEG instead of
 	// H.264 video, in Text; empty when it can send video.
@@ -61,7 +67,8 @@ const (
 	// viewer -> server -> host: send diagnostics. host -> server -> every
 	// viewer: the host's diagnostics (settings, recent log) in Text.
 	TypeDiagnostics = "diagnostics"
-	// viewer -> server -> host: show Display instead.
+	// viewer -> server -> host: show Display instead, or only its Region
+	// (a virtual monitor) when that is set.
 	TypeSelectDisplay = "select_display"
 	// server -> host: a viewer went away.
 	TypeViewerLeft = "viewer_left"
@@ -71,20 +78,22 @@ const (
 
 // Message is the envelope for every control message. Unused fields are omitted.
 type Message struct {
-	Type     string `json:"type"`
-	ID       string `json:"id,omitempty"`
-	Password string `json:"password,omitempty"`
-	Viewer   string `json:"viewer,omitempty"`
-	OK       bool   `json:"ok,omitempty"`
-	Error    string `json:"error,omitempty"`
-	Input    *Input `json:"input,omitempty"`
-	Seq      uint32 `json:"seq,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Cursor   string `json:"cursor,omitempty"`
-	Display  int    `json:"display,omitempty"`
-	Count    int    `json:"count,omitempty"`
-	Scale    int    `json:"scale,omitempty"`
-	All      bool   `json:"all,omitempty"`
+	Type     string  `json:"type"`
+	ID       string  `json:"id,omitempty"`
+	Password string  `json:"password,omitempty"`
+	Viewer   string  `json:"viewer,omitempty"`
+	OK       bool    `json:"ok,omitempty"`
+	Error    string  `json:"error,omitempty"`
+	Input    *Input  `json:"input,omitempty"`
+	Seq      uint32  `json:"seq,omitempty"`
+	Text     string  `json:"text,omitempty"`
+	Cursor   string  `json:"cursor,omitempty"`
+	Display  int     `json:"display,omitempty"`
+	Count    int     `json:"count,omitempty"`
+	Scale    int     `json:"scale,omitempty"`
+	All      bool    `json:"all,omitempty"`
+	Sizes    []Size  `json:"sizes,omitempty"`
+	Region   *Region `json:"region,omitempty"`
 	// Video is set on TypeRefresh when the viewer can decode H.264.
 	Video bool `json:"video,omitempty"`
 }
@@ -119,4 +128,58 @@ type Input struct {
 	DeltaY float64 `json:"deltaY,omitempty"`
 	Key    string  `json:"key,omitempty"`
 	Code   string  `json:"code,omitempty"`
+}
+
+// Size is a width and height in pixels.
+type Size struct {
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// Region is a part of a display, as fractions 0..1 of its width and
+// height: a virtual monitor. Input coordinates and the picture then cover
+// only the region.
+type Region struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+}
+
+// Clean returns r clipped to the display, or nil when it is (nearly) the
+// whole display or makes no sense, which both mean the whole display.
+func (r *Region) Clean() *Region {
+	if r == nil {
+		return nil
+	}
+	c := func(v float64) float64 { return min(max(v, 0), 1) }
+	x0, y0 := c(r.X), c(r.Y)
+	x1, y1 := c(r.X+r.W), c(r.Y+r.H)
+	if x1-x0 < 0.01 || y1-y0 < 0.01 || x0 < 0.001 && y0 < 0.001 && x1 > 0.999 && y1 > 0.999 {
+		return nil
+	}
+	return &Region{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
+}
+
+// Of returns the part of rect r covers. A nil region is all of rect.
+func (r *Region) Of(rect image.Rectangle) image.Rectangle {
+	if r == nil || rect.Empty() {
+		return rect
+	}
+	w, h := float64(rect.Dx()), float64(rect.Dy())
+	x0 := rect.Min.X + int(r.X*w+0.5)
+	y0 := rect.Min.Y + int(r.Y*h+0.5)
+	x1 := rect.Min.X + int((r.X+r.W)*w+0.5)
+	y1 := rect.Min.Y + int((r.Y+r.H)*h+0.5)
+	return image.Rect(x0, y0, x1, y1).Intersect(rect)
+}
+
+// Map turns a point given as 0..1 of the region into 0..1 of the whole
+// display. A nil region maps every point to itself.
+func (r *Region) Map(x, y float64) (float64, float64) {
+	if r == nil {
+		return x, y
+	}
+	c := func(v float64) float64 { return min(max(v, 0), 1) }
+	return r.X + c(x)*r.W, r.Y + c(y)*r.H
 }
