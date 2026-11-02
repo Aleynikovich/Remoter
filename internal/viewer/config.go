@@ -35,6 +35,9 @@ type Config struct {
 	// Zoom shows a part of the picture that fills the window and follows
 	// the pointer, instead of the whole picture with black bars.
 	Zoom bool `json:"zoom,omitempty"`
+	// KVM is the computer "remoter kvm" last sent keyboard and mouse to,
+	// used when it is started without one (from its Start menu shortcut).
+	KVM string `json:"kvm,omitempty"`
 }
 
 // PasswordFor is the password to try for server: the one that worked last

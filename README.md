@@ -302,6 +302,37 @@ The API is plain HTTP on port 8080 (`internal/share`): `GET /share/info`,
 `POST /share/file?name=…`, `POST /share/text`, with the sender in an
 `X-Remoter-From` header.
 
+## One keyboard and mouse for two computers (merged desktop)
+
+`remoter kvm` makes a second computer's screens carry on past an edge of
+this one's, like Synergy or Mouse Without Borders: push the pointer off
+that edge and it appears on the other computer, and the keyboard follows
+it. Move back over the edge (or press **Scroll Lock**) to come back. Text
+copied on one computer pastes on the other. It sends from Windows; the
+other computer just runs Remoter as usual (Linux with Hyprland or another
+wlroots compositor, X11, or Windows).
+
+    remoter kvm SR00047L                 # the Linux PC is below these screens
+    remoter kvm -side right 100.1.2.3    # ...or to the right
+    remoter kvm -screen 1 SR00047L       # only the second screen's edge (left to right, from 0)
+
+- The pointer crosses only after you keep pushing against the edge for a
+  moment (`-push`, 0 for at once), so a taskbar there stays easy to hit.
+  It does not cross while a mouse button is held.
+- The other computer can be found by name on the home network or on
+  Tailscale, or given as an address. With no computer named (the
+  **Remoter merged desktop** Start menu entry), it asks the first time and
+  then remembers. It uses the password the viewer saved for that computer,
+  or `-password`.
+- Every keystroke crosses the network. Tailscale encrypts it; on the home
+  network it is not encrypted (a warning says so), and other addresses need
+  `-insecure`.
+- Ctrl+Alt+Del, the lock screen and UAC prompts always stay on Windows;
+  the keyboard and mouse come back by themselves when one appears, and
+  when the link drops.
+- On Hyprland, Super key bindings may not fire from Remoter's virtual
+  keyboard (a known Hyprland limitation); Alt and Ctrl ones do.
+
 ## Development
 
 ```sh

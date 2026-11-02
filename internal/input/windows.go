@@ -38,6 +38,7 @@ const (
 	mouseeventfMiddleDown = 0x0020
 	mouseeventfMiddleUp   = 0x0040
 	mouseeventfWheel      = 0x0800
+	mouseeventfHWheel     = 0x1000
 	mouseeventfVirtualDsk = 0x4000
 	mouseeventfAbsolute   = 0x8000
 
@@ -135,11 +136,13 @@ func (w *windows) HandleInput(viewer string, in protocol.Input) {
 		w.move(in.X, in.Y)
 		// Browsers report pixels (about 100 per notch) with down positive;
 		// Windows wants 120 per notch with up positive.
-		amount := int32(-in.DeltaY * wheelDelta / 100)
-		if amount == 0 {
-			return
+		if amount := int32(-in.DeltaY * wheelDelta / 100); amount != 0 {
+			sendMouse(0, 0, uint32(amount), mouseeventfWheel)
 		}
-		sendMouse(0, 0, uint32(amount), mouseeventfWheel)
+		// Horizontal: right positive in both.
+		if amount := int32(in.DeltaX * wheelDelta / 100); amount != 0 {
+			sendMouse(0, 0, uint32(amount), mouseeventfHWheel)
+		}
 	case "keydown", "keyup":
 		k, ok := lookupKey(in)
 		if !ok {

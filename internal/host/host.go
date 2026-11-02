@@ -86,6 +86,16 @@ type releaser interface {
 	ReleaseAll(viewer string)
 }
 
+// KVMInput applies input from keyboard-and-mouse senders (the merged
+// desktop): pointer positions are 0..1 of the box around Screens.
+type KVMInput interface {
+	InputHandler
+	ReleaseAll(viewer string)
+	// Screens are the monitors in the layout, in the coordinates the
+	// pointer moves in.
+	Screens() []image.Rectangle
+}
+
 // VideoEncoder compresses captures into H.264 frames (Annex B). Encode
 // returns nil data when the encoder drops the frame.
 type VideoEncoder interface {
@@ -147,6 +157,10 @@ type Agent struct {
 	VideoStatus  func() string
 	restartVideo atomic.Bool
 
+	// KVM, if set, takes the input of viewers that join as a keyboard and
+	// mouse sender (protocol.TypeKVM) instead of Input.
+	KVM KVMInput
+
 	// Diagnostics, if set, returns the host's settings and recent log for
 	// viewers that ask for them.
 	Diagnostics func() string
@@ -167,6 +181,61 @@ type Agent struct {
 
 	clipMu  sync.Mutex
 	clipSeq uint32 // clipboard sequence number last sent or written
+
+	kvmMu      sync.Mutex
+	kvmSenders map[string]bool // viewers that joined as keyboard-and-mouse senders
+}
+
+// kvmSender reports whether viewer joined as a keyboard-and-mouse sender.
+func (a *Agent) kvmSender(viewer string) bool {
+	a.kvmMu.Lock()
+	defer a.kvmMu.Unlock()
+	return a.kvmSenders[viewer]
+}
+
+func (a *Agent) setKVMSender(viewer string, on bool) {
+	a.kvmMu.Lock()
+	defer a.kvmMu.Unlock()
+	if on {
+		a.kvmSenders[viewer] = true
+	} else {
+		delete(a.kvmSenders, viewer)
+	}
+}
+
+// watched reports whether anyone is using the host: a viewer streaming
+// or a keyboard-and-mouse sender, which both want clipboard changes.
+func (a *Agent) watched() bool {
+	if a.flow.watched() {
+		return true
+	}
+	a.kvmMu.Lock()
+	defer a.kvmMu.Unlock()
+	return len(a.kvmSenders) > 0
+}
+
+// handleKVM answers a keyboard-and-mouse sender's join, enter or leave.
+func (a *Agent) handleKVM(ctx context.Context, conn *websocket.Conn, m protocol.Message) error {
+	if a.KVM == nil {
+		log.Printf("viewer %s wants to send keyboard and mouse, but this host does not take input", m.Viewer)
+		return send(ctx, conn, protocol.Message{Type: protocol.TypeKVM, Error: "this computer does not take remote input (view only?)"})
+	}
+	switch m.Text {
+	case "join":
+		a.setKVMSender(m.Viewer, true)
+		var screens []protocol.Rect
+		for _, r := range a.KVM.Screens() {
+			screens = append(screens, protocol.Rect{X: r.Min.X, Y: r.Min.Y, W: r.Dx(), H: r.Dy()})
+		}
+		log.Printf("viewer %s joined as keyboard and mouse, %d screens", m.Viewer, len(screens))
+		return send(ctx, conn, protocol.Message{Type: protocol.TypeKVM, Text: "screens", Screens: screens})
+	case "enter":
+		log.Printf("keyboard and mouse of viewer %s came over", m.Viewer)
+	case "leave":
+		a.KVM.ReleaseAll(m.Viewer)
+		log.Printf("keyboard and mouse of viewer %s went back", m.Viewer)
+	}
+	return nil
 }
 
 // flow tracks which viewers are watching and how far behind each one is.
@@ -467,6 +536,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.RefineQuality = 90
 	}
 	a.flow = flow{viewers: make(map[string]*viewerState), wake: make(chan struct{}, 1)}
+	a.kvmMu.Lock()
+	a.kvmSenders = make(map[string]bool)
+	a.kvmMu.Unlock()
 	if a.res == nil {
 		a.res = newQuality()
 	}
@@ -623,9 +695,22 @@ func (a *Agent) Run(ctx context.Context) error {
 			if r, ok := a.Input.(releaser); ok {
 				r.ReleaseAll(m.Viewer)
 			}
+			if a.kvmSender(m.Viewer) {
+				a.setKVMSender(m.Viewer, false)
+				a.KVM.ReleaseAll(m.Viewer)
+			}
 			log.Printf("viewer %s left", m.Viewer)
+		case protocol.TypeKVM:
+			if err := a.handleKVM(ctx, conn, m); err != nil {
+				return err
+			}
 		case protocol.TypeInput:
-			if m.Input != nil {
+			if m.Input == nil {
+				continue
+			}
+			if a.KVM != nil && a.kvmSender(m.Viewer) {
+				a.KVM.HandleInput(m.Viewer, *m.Input)
+			} else {
 				a.Input.HandleInput(m.Viewer, *m.Input)
 			}
 		}
@@ -1051,7 +1136,7 @@ func (a *Agent) watchClipboard(ctx context.Context, conn *websocket.Conn) {
 		changed := seq != a.clipSeq
 		a.clipSeq = seq
 		a.clipMu.Unlock()
-		if !changed || !a.flow.watched() {
+		if !changed || !a.watched() {
 			continue
 		}
 		text, err := a.Clipboard.ReadText()

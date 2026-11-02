@@ -46,6 +46,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "send" {
 		os.Exit(runSend(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "kvm" {
+		os.Exit(runKVM(os.Args[2:]))
+	}
 	if args, ok := viewerArgs(os.Args); ok {
 		viewerapp.Main(args)
 		return
