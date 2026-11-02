@@ -34,9 +34,15 @@ const (
 // Worker runs functions on a dedicated thread kept on the active input
 // desktop.
 type Worker struct {
-	name string
-	reqs chan func()
+	name    string
+	reqs    chan func()
+	desktop string // name of the desktop the thread is on; only read inside Do
 }
+
+// Desktop is the name of the desktop the worker's thread is on, such as
+// "Default" or "Winlogon" (the sign-in, lock and UAC screens). Call it only
+// from a function passed to Do, which runs on that thread.
+func (w *Worker) Desktop() string { return w.desktop }
 
 // NewWorker starts a worker thread. name appears in its log lines.
 func NewWorker(name string) *Worker {
@@ -71,6 +77,7 @@ func (w *Worker) run() {
 						procCloseDesktop.Call(cur)
 					}
 					cur, curName = h, name
+					w.desktop = name
 					log.Printf("%s: following input desktop %q", w.name, name)
 				} else {
 					// Could not switch (another thread may hold it); keep
