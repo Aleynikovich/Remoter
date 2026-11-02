@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"testing"
 )
@@ -23,5 +24,24 @@ func TestViewerArgs(t *testing.T) {
 		if ok != tc.viewer || !slices.Equal(got, tc.want) {
 			t.Errorf("%q: got %q %v", tc.argv, got, ok)
 		}
+	}
+}
+
+func TestKVMAddress(t *testing.T) {
+	for in, want := range map[string]string{
+		"100.116.112.42":      "100.116.112.42:8080",
+		"100.116.112.42:9000": "100.116.112.42:9000",
+		"127.0.0.1":           "127.0.0.1:8080",
+	} {
+		got, err := kvmAddress(context.Background(), in, false)
+		if err != nil || got != want {
+			t.Errorf("kvmAddress(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	if _, err := kvmAddress(context.Background(), "192.168.1.20", false); err == nil {
+		t.Error("a home network address was allowed without -insecure")
+	}
+	if got, err := kvmAddress(context.Background(), "192.168.1.20", true); err != nil || got != "192.168.1.20:8080" {
+		t.Errorf("with -insecure: %q, %v", got, err)
 	}
 }

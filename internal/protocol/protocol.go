@@ -70,6 +70,16 @@ const (
 	// viewer -> server -> host: show Display instead, or only its Region
 	// (a virtual monitor) when that is set.
 	TypeSelectDisplay = "select_display"
+	// viewer -> server -> host: a keyboard-and-mouse sender ("remoter kvm",
+	// the merged desktop). Text "join" makes this viewer a sender: it gets
+	// no picture, its pointer positions are 0..1 of the box around every
+	// monitor (whatever display other viewers watch), and clipboard
+	// changes reach it as they would a watching viewer. Text "enter" and
+	// "leave" say the pointer crossed onto or off this computer; on leave
+	// the host lets go of every key and button the sender holds.
+	// host -> server -> every viewer: Screens, every monitor's rectangle in
+	// the host's layout, in reply to a join. Other viewers ignore it.
+	TypeKVM = "kvm"
 	// server -> host: a viewer went away.
 	TypeViewerLeft = "viewer_left"
 	// server -> any: something went wrong; the connection is usually closed next.
@@ -94,6 +104,7 @@ type Message struct {
 	All      bool    `json:"all,omitempty"`
 	Sizes    []Size  `json:"sizes,omitempty"`
 	Region   *Region `json:"region,omitempty"`
+	Screens  []Rect  `json:"screens,omitempty"`
 	// Video is set on TypeRefresh when the viewer can decode H.264.
 	Video bool `json:"video,omitempty"`
 }
@@ -102,7 +113,7 @@ type Message struct {
 // type on to the host.
 func FromViewer(typ string) bool {
 	switch typ {
-	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics, TypeQuality, TypeDataSaver, TypeRealPointer:
+	case TypeInput, TypeRefresh, TypeAck, TypeClipboard, TypeSelectDisplay, TypeDiagnostics, TypeQuality, TypeDataSaver, TypeRealPointer, TypeKVM:
 		return true
 	}
 	return false
@@ -112,7 +123,7 @@ func FromViewer(typ string) bool {
 // type on to every viewer.
 func ToViewers(typ string) bool {
 	switch typ {
-	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics, TypeQuality, TypeDataSaver, TypeRealPointer:
+	case TypeClipboard, TypeCursor, TypeDisplays, TypeVideo, TypeDiagnostics, TypeQuality, TypeDataSaver, TypeRealPointer, TypeKVM:
 		return true
 	}
 	return false
@@ -126,12 +137,23 @@ type Input struct {
 	Y      float64 `json:"y,omitempty"`
 	Button int     `json:"button,omitempty"`
 	DeltaY float64 `json:"deltaY,omitempty"`
+	// DeltaX is the horizontal wheel, right positive, like DeltaY in
+	// about 100 per notch.
+	DeltaX float64 `json:"deltaX,omitempty"`
 	Key    string  `json:"key,omitempty"`
 	Code   string  `json:"code,omitempty"`
 }
 
 // Size is a width and height in pixels.
 type Size struct {
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// Rect is a rectangle in pixels: a monitor in a host's layout.
+type Rect struct {
+	X int `json:"x"`
+	Y int `json:"y"`
 	W int `json:"w"`
 	H int `json:"h"`
 }

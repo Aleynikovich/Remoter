@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"log"
 	"math"
 	"net"
@@ -68,6 +69,20 @@ type Output struct {
 	// wl_output, so the layout position comes from xdg-output.
 	logical bool
 	lx, ly  int
+	// LW, LH is the monitor's size in the layout, which differs from W, H
+	// on a scaled monitor; 0 until xdg-output tells.
+	LW, LH int
+}
+
+// Logical is the monitor's rectangle in the compositor's layout, the space
+// the pointer moves in: its size there is smaller than its mode on a
+// scaled monitor.
+func (o Output) Logical() image.Rectangle {
+	w, h := o.W, o.H
+	if o.LW > 0 && o.LH > 0 {
+		w, h = o.LW, o.LH
+	}
+	return image.Rect(o.X, o.Y, o.X+w, o.Y+h)
 }
 
 // SocketPath finds the compositor's socket: $WAYLAND_DISPLAY, or, for a
@@ -418,6 +433,13 @@ func (c *Conn) bind(g *Global, max uint32, h func(uint16, *reader)) uint32 {
 // watchXDGOutput asks for the output's position in the layout.
 func (c *Conn) watchXDGOutput(o *Output) {
 	id := c.newID(func(op uint16, r *reader) {
+		if op == 1 { // logical_size: w, h
+			w, h := int(r.int()), int(r.int())
+			c.mu.Lock()
+			o.LW, o.LH = w, h
+			c.mu.Unlock()
+			return
+		}
 		if op != 0 { // logical_position: x, y
 			return
 		}

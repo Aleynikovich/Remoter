@@ -522,3 +522,62 @@ func TestHostKeepsIDAcrossRestart(t *testing.T) {
 		t.Fatalf("invalid requested ID accepted: %s", id)
 	}
 }
+
+// fakeKVM records a keyboard-and-mouse sender's input and releases.
+type fakeKVM struct {
+	inputs   chan protocol.Input
+	released chan string
+}
+
+func (k *fakeKVM) HandleInput(_ string, in protocol.Input) { k.inputs <- in }
+func (k *fakeKVM) ReleaseAll(viewer string)                { k.released <- viewer }
+func (k *fakeKVM) Screens() []image.Rectangle {
+	return []image.Rectangle{image.Rect(0, 0, 1920, 1200), image.Rect(1920, 0, 3840, 1080)}
+}
+
+func TestKVMSenderGetsScreensAndItsOwnInput(t *testing.T) {
+	normal := make(inputRecorder, 4)
+	kvm := &fakeKVM{inputs: make(chan protocol.Input, 4), released: make(chan string, 4)}
+	clip := &fakeClipboard{}
+	base, id := startHostWith(t, &host.Agent{Password: "secret", Input: normal, KVM: kvm, Clipboard: clip})
+	c, m := dialViewer(t, base, id, "secret")
+	if m.Type != protocol.TypeConnected {
+		t.Fatalf("got %+v, want connected", m)
+	}
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeKVM, Text: "join"})
+	got := readText(t, c, protocol.TypeKVM)
+	if len(got.Screens) != 2 || got.Screens[1] != (protocol.Rect{X: 1920, Y: 0, W: 1920, H: 1080}) {
+		t.Fatalf("screens %+v", got.Screens)
+	}
+
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeInput, Input: &protocol.Input{Kind: "wheel", X: 0.9, DeltaX: 100}})
+	select {
+	case in := <-kvm.inputs:
+		if in.DeltaX != 100 || in.X != 0.9 {
+			t.Fatalf("kvm input %+v", in)
+		}
+	case in := <-normal:
+		t.Fatalf("a sender's input went to the viewer injector: %+v", in)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no input")
+	}
+
+	// A sender gets clipboard changes without watching the screen.
+	clip.WriteText("copied on the host")
+	if m := readText(t, c, protocol.TypeClipboard); m.Text != "copied on the host" {
+		t.Fatalf("clipboard %q", m.Text)
+	}
+
+	sendJSON(t, c, protocol.Message{Type: protocol.TypeKVM, Text: "leave"})
+	select {
+	case <-kvm.released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leave did not release held keys")
+	}
+	c.Close(websocket.StatusNormalClosure, "")
+	select {
+	case <-kvm.released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("disconnect did not release held keys")
+	}
+}

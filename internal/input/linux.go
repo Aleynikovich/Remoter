@@ -24,6 +24,7 @@ type device interface {
 	move(p image.Point)
 	button(b int, down bool)
 	scroll(notches float64)
+	hscroll(notches float64)
 	key(code uint32, down bool)
 	setDisplay(display image.Rectangle)
 	// bounds is the display area to use when the host did not know one yet.
@@ -42,8 +43,11 @@ func newNative(display image.Rectangle) (Handler, error) {
 	return l, nil
 }
 
-func openDevice(display image.Rectangle) (device, error) {
+func openDevice(display image.Rectangle, layout bool) (device, error) {
 	if wayland.Available() {
+		if layout {
+			return newWaylandLayoutDevice()
+		}
 		return newWaylandDevice(display)
 	}
 	if os.Getenv("DISPLAY") != "" {
@@ -58,6 +62,9 @@ type linux struct {
 	display image.Rectangle
 	tried   time.Time
 	lastErr string
+	// layout: pointer positions cover every monitor, in the compositor's
+	// layout (a keyboard-and-mouse sender's input).
+	layout bool
 
 	keys    map[string]map[uint32]bool
 	buttons map[string]map[int]bool
@@ -72,7 +79,7 @@ func (l *linux) open() error {
 		return errors.New(l.lastErr)
 	}
 	l.tried = time.Now()
-	dev, err := openDevice(l.display)
+	dev, err := openDevice(l.display, l.layout)
 	if err != nil {
 		if err.Error() != l.lastErr {
 			log.Printf("input: remote control not ready, trying again on the next input: %v", err)
@@ -93,7 +100,7 @@ func (l *linux) HandleInput(viewer string, in protocol.Input) {
 	if l.open() != nil {
 		return
 	}
-	if l.display.Empty() {
+	if l.display.Empty() || l.layout {
 		l.display = l.dev.bounds()
 		if l.display.Empty() {
 			return
@@ -110,12 +117,11 @@ func (l *linux) HandleInput(viewer string, in protocol.Input) {
 	case "wheel":
 		l.dev.move(toScreen(l.display, in.X, in.Y))
 		// Browsers report about 100 pixels per notch, down positive.
-		notches := in.DeltaY / 100
-		if math.Abs(notches) >= 0.5 {
-			notches = math.Round(notches)
+		if n := notches(in.DeltaY); n != 0 {
+			l.dev.scroll(n)
 		}
-		if notches != 0 {
-			l.dev.scroll(notches)
+		if n := notches(in.DeltaX); n != 0 {
+			l.dev.hscroll(n)
 		}
 	case "keydown", "keyup":
 		code, ok := evdevByCode[in.Code]
@@ -156,6 +162,16 @@ func (l *linux) SetDisplay(display image.Rectangle) {
 	}
 }
 
+// notches turns a browser wheel delta (about 100 per notch) into notches,
+// whole ones where it is near enough.
+func notches(delta float64) float64 {
+	n := delta / 100
+	if math.Abs(n) >= 0.5 {
+		n = math.Round(n)
+	}
+	return n
+}
+
 func setHeld[T comparable](held map[string]map[T]bool, viewer string, v T, down bool) {
 	if down {
 		if held[viewer] == nil {
@@ -172,6 +188,8 @@ func setHeld[T comparable](held map[string]map[T]bool, viewer string, v T, down 
 type waylandDevice struct {
 	display image.Rectangle
 	xkb     *xkb
+	// layout: positions are in the compositor's layout, every monitor.
+	layout bool
 
 	conn     *wayland.Conn
 	output   wayland.Output
@@ -181,6 +199,11 @@ type waylandDevice struct {
 
 func newWaylandDevice(display image.Rectangle) (*waylandDevice, error) {
 	w := &waylandDevice{display: display, xkb: newXKB()}
+	return w, w.ensure()
+}
+
+func newWaylandLayoutDevice() (*waylandDevice, error) {
+	w := &waylandDevice{layout: true, xkb: newXKB()}
 	return w, w.ensure()
 }
 
@@ -203,6 +226,18 @@ func (w *waylandDevice) ensure() error {
 		return errors.New("no monitors")
 	}
 	w.output = outs[0]
+	if w.layout {
+		if w.pointer, err = c.NewLogicalPointer(); err != nil {
+			return err
+		}
+		if w.keyboard == nil {
+			if w.keyboard, err = c.NewKeyboard(w.xkb.keymap); err != nil {
+				w.pointer = nil
+				return err
+			}
+		}
+		return nil
+	}
 	one := false
 	for _, o := range outs {
 		if o.X == w.display.Min.X && o.Y == w.display.Min.Y {
@@ -229,6 +264,12 @@ func (w *waylandDevice) ensure() error {
 }
 
 func (w *waylandDevice) move(p image.Point) {
+	if w.layout {
+		if w.ensure() == nil {
+			w.pointer.MoveLogical(p.X, p.Y)
+		}
+		return
+	}
 	if w.ensure() == nil {
 		w.pointer.Move(p.X-w.display.Min.X, p.Y-w.display.Min.Y)
 	}
@@ -247,6 +288,12 @@ func (w *waylandDevice) scroll(notches float64) {
 	}
 }
 
+func (w *waylandDevice) hscroll(notches float64) {
+	if w.ensure() == nil {
+		w.pointer.ScrollAxis(1, notches)
+	}
+}
+
 func (w *waylandDevice) key(code uint32, down bool) {
 	if w.ensure() != nil {
 		return
@@ -260,12 +307,22 @@ func (w *waylandDevice) bounds() image.Rectangle {
 	if w.ensure() != nil {
 		return image.Rectangle{}
 	}
+	if w.layout {
+		var box image.Rectangle
+		for _, r := range w.conn.LogicalLayout() {
+			box = box.Union(r)
+		}
+		return box
+	}
 	o := w.output
 	w.display = image.Rect(o.X, o.Y, o.X+o.W, o.Y+o.H)
 	return w.display
 }
 
 func (w *waylandDevice) setDisplay(display image.Rectangle) {
+	if w.layout {
+		return
+	}
 	w.display = display
 	if w.pointer != nil {
 		w.pointer.Close()
@@ -324,6 +381,17 @@ func (x *x11Device) scroll(notches float64) {
 	}
 }
 
+func (x *x11Device) hscroll(notches float64) {
+	btn := byte(7) // right
+	if notches < 0 {
+		btn = 6
+	}
+	for range max(1, int(math.Abs(notches))) {
+		x.fake(xButtonPress, btn, 0, 0)
+		x.fake(xButtonRelease, btn, 0, 0)
+	}
+}
+
 func (x *x11Device) key(code uint32, down bool) {
 	// X keycodes are evdev codes plus 8 on every current X server.
 	x.fake(map[bool]byte{true: xKeyPress, false: xKeyRelease}[down], byte(code+8), 0, 0)
@@ -335,4 +403,33 @@ func (x *x11Device) setDisplay(image.Rectangle) {}
 func (x *x11Device) bounds() image.Rectangle {
 	s := xproto.Setup(x.conn).DefaultScreen(x.conn)
 	return image.Rect(0, 0, int(s.WidthInPixels), int(s.HeightInPixels))
+}
+
+func newLayout(screens func() []image.Rectangle) (Layout, error) {
+	l := &linux{
+		layout:  true,
+		keys:    make(map[string]map[uint32]bool),
+		buttons: make(map[string]map[int]bool),
+	}
+	l.open()
+	return &linuxLayout{linux: l, screens: screens}, nil
+}
+
+// linuxLayout is a linux injector in layout mode.
+type linuxLayout struct {
+	*linux
+	screens func() []image.Rectangle
+}
+
+// Screens are the monitors in the compositor's layout on Wayland (smaller
+// than their modes when scaled), or as capture sees them on X11.
+func (l *linuxLayout) Screens() []image.Rectangle {
+	if wayland.Available() {
+		if c, err := wayland.Shared(); err == nil {
+			if rs := c.LogicalLayout(); len(rs) > 0 {
+				return rs
+			}
+		}
+	}
+	return l.screens()
 }

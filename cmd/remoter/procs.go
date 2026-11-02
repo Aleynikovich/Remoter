@@ -15,7 +15,7 @@ import (
 type procRole int
 
 const (
-	roleOther   procRole = iota // helpers: -version, self-tests, send, -stop
+	roleOther   procRole = iota // helpers: -version, self-tests, send, kvm, -stop
 	roleHost                    // shares this computer (relay and/or host)
 	roleService                 // the boot service itself
 	roleChild                   // the host the boot service started
@@ -52,7 +52,8 @@ func roleOf(argv []string) procRole {
 		// then stays open as the viewer window.
 		return roleViewer
 	}
-	if argv[1] == "send" {
+	if argv[1] == "send" || argv[1] == "kvm" {
+		// kvm takes flags of its own, which must not read as a host's.
 		return roleOther
 	}
 	role := roleHost

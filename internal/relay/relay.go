@@ -68,6 +68,9 @@ type viewer struct {
 	conn    *websocket.Conn
 	out     chan outgoing
 	tooSlow bool // guarded by host.mu
+	// noFrames: a keyboard-and-mouse sender, which never shows the
+	// screen, so screen updates are not sent to it. Guarded by host.mu.
+	noFrames bool
 }
 
 type outgoing struct {
@@ -235,6 +238,11 @@ func (s *Server) serveViewer(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		m.Viewer = v.id
+		if m.Type == protocol.TypeKVM && m.Text == "join" {
+			h.mu.Lock()
+			v.noFrames = true
+			h.mu.Unlock()
+		}
 		if err := writeJSON(ctx, h.conn, m); err != nil {
 			return
 		}
@@ -385,7 +393,7 @@ func (h *host) broadcast(msg outgoing) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, v := range h.viewers {
-		if v.tooSlow {
+		if v.tooSlow || msg.typ == websocket.MessageBinary && v.noFrames {
 			continue
 		}
 		select {
