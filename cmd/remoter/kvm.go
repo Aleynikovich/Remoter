@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -10,11 +11,14 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aleynikovich/remoter/internal/clipboard"
 	"github.com/aleynikovich/remoter/internal/kvm"
+	"github.com/aleynikovich/remoter/internal/lan"
 	"github.com/aleynikovich/remoter/internal/viewer"
 )
 
@@ -37,13 +41,14 @@ Use this computer's keyboard and mouse on another computer running Remoter,
 as if its screens were past an edge of these: push the pointer off that
 edge and it carries on over there, with the keyboard; move back over the
 edge to come back. Scroll Lock brings them back from anywhere.
-computer is a Tailscale device name or address (host or host:port).`)
+computer is a Tailscale device name or address (host or host:port). Without
+one it uses the computer from last time, or asks which one.`)
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
+	if fs.NArg() > 1 {
 		fs.Usage()
 		return 2
 	}
@@ -55,16 +60,32 @@ computer is a Tailscale device name or address (host or host:port).`)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	addr, err := kvmAddress(ctx, fs.Arg(0), *insecure)
+	cfgPath, _ := viewer.ConfigPath()
+	cfg := viewer.LoadConfig(cfgPath)
+	target := fs.Arg(0)
+	if target == "" {
+		target = cfg.KVM
+	}
+	if target == "" {
+		if target, err = chooseKVMTarget(ctx); err != nil {
+			return kvmFail(err)
+		}
+	}
+	addr, err := kvmAddress(ctx, target, *insecure)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "remoter kvm:", err)
-		return 1
+		return kvmFail(err)
+	}
+	if cfg.KVM != target {
+		cfg = viewer.LoadConfig(cfgPath)
+		cfg.KVM = target
+		if cfgPath != "" {
+			cfg.Save(cfgPath)
+		}
 	}
 	pw := *password
 	if pw == "" {
-		cfgPath, _ := viewer.ConfigPath()
 		host, _, _ := net.SplitHostPort(addr)
-		pw = viewer.LoadConfig(cfgPath).PasswordFor(addr, host)
+		pw = cfg.PasswordFor(addr, host)
 	}
 	if pw == "root" {
 		log.Print("kvm: the other computer uses Remoter's default password; anyone who can reach it can type there. Consider setting -password on both.")
@@ -78,19 +99,102 @@ computer is a Tailscale device name or address (host or host:port).`)
 		o.Clipboard = clipboard.New()
 	}
 	log.Printf("kvm: Remoter %s, sending keyboard and mouse to %s past the %s edge", version(), addr, s)
+	log.Print("kvm: close this window (or press Ctrl+C) to stop")
 	if err := kvm.Run(ctx, o); err != nil {
-		fmt.Fprintln(os.Stderr, "remoter kvm:", err)
-		return 1
+		return kvmFail(err)
 	}
 	return 0
+}
+
+// kvmFail reports err. Started from its shortcut the console window closes
+// as soon as Remoter exits, so it waits for Enter first.
+func kvmFail(err error) int {
+	fmt.Fprintln(os.Stderr, "remoter kvm:", err)
+	if isTerminal() {
+		fmt.Fprint(os.Stderr, "Press Enter to close.")
+		bufio.NewReader(os.Stdin).ReadString('\n')
+	}
+	return 1
+}
+
+// kvmTarget is a computer running Remoter that the keyboard and mouse can
+// go to.
+type kvmTarget struct {
+	name, os, addr string
+}
+
+// kvmTargets lists the other computers running Remoter on the home
+// network and on Tailscale. A computer on both is reached on the home
+// network.
+func kvmTargets(ctx context.Context) []kvmTarget {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	home := make(chan []lan.Answer, 1)
+	go func() {
+		as, _ := lan.Discover(ctx, 1500*time.Millisecond)
+		home <- as
+	}()
+	var ts []kvmTarget
+	if ds, err := viewer.TailnetDevices(ctx); err == nil {
+		for _, d := range viewer.ProbeDevices(ctx, ds) {
+			if !d.Self && d.Remoter != "" && !isPhoneOS(d.OS) {
+				ts = append(ts, kvmTarget{d.Name, d.OS, d.Addr()})
+			}
+		}
+	}
+	self := lan.Addresses()
+	for _, a := range <-home {
+		if a.Remoter == "" || isPhoneOS(a.OS) || slices.Contains(self, a.IP) {
+			continue
+		}
+		t := kvmTarget{a.Name, a.OS, a.Addr()}
+		if i := slices.IndexFunc(ts, func(o kvmTarget) bool { return strings.EqualFold(o.name, a.Name) }); i >= 0 {
+			ts[i] = t
+		} else {
+			ts = append(ts, t)
+		}
+	}
+	return ts
+}
+
+func isPhoneOS(os string) bool {
+	return strings.EqualFold(os, "android") || strings.EqualFold(os, "ios")
+}
+
+// chooseKVMTarget picks the other computer: the only one running Remoter,
+// or the one chosen from a list.
+func chooseKVMTarget(ctx context.Context) (string, error) {
+	fmt.Println("Looking for computers running Remoter...")
+	found := kvmTargets(ctx)
+	switch len(found) {
+	case 0:
+		return "", errors.New("no other computer running Remoter answered, on the home network or on Tailscale")
+	case 1:
+		fmt.Printf("Using %s (%s).\n", found[0].name, found[0].addr)
+		return found[0].name, nil
+	}
+	for i, t := range found {
+		fmt.Printf("%d) %s (%s, %s)\n", i+1, t.name, t.os, t.addr)
+	}
+	fmt.Print("Use the keyboard and mouse on [1]: ")
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	n := 1
+	if line = strings.TrimSpace(line); line != "" {
+		var err error
+		if n, err = strconv.Atoi(line); err != nil || n < 1 || n > len(found) {
+			return "", errors.New("no such computer")
+		}
+	}
+	return found[n-1].name, nil
 }
 
 // tailnet is Tailscale's address range, which WireGuard encrypts.
 var tailnet = netip.MustParsePrefix("100.64.0.0/10")
 
-// kvmAddress finds the other computer's relay address. Every keystroke
-// crosses the network in Remoter's plain WebSocket, so it must be on the
-// Tailscale network (encrypted) unless insecure is set.
+// kvmAddress finds the other computer's relay address, by name on the home
+// network or Tailscale, or as an address. Every keystroke crosses in
+// Remoter's plain WebSocket, so it must be on Tailscale (encrypted) or the
+// home network (with a warning), unless insecure is set.
 func kvmAddress(ctx context.Context, name string, insecure bool) (string, error) {
 	host, port, err := net.SplitHostPort(name)
 	if err != nil {
@@ -98,45 +202,45 @@ func kvmAddress(ctx context.Context, name string, insecure bool) (string, error)
 	}
 	ip, err := netip.ParseAddr(host)
 	if err != nil {
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		ds, err := viewer.TailnetDevices(ctx)
-		if err != nil {
-			return "", fmt.Errorf("cannot look up %q on Tailscale: %v", host, err)
-		}
-		var found []viewer.Device
-		for _, d := range ds {
-			if d.Self {
-				continue
-			}
-			if strings.EqualFold(d.Name, host) {
-				found = []viewer.Device{d}
+		var found []kvmTarget
+		for _, t := range kvmTargets(ctx) {
+			if strings.EqualFold(t.name, host) {
+				found = []kvmTarget{t}
 				break
 			}
-			if strings.Contains(strings.ToLower(d.Name), strings.ToLower(host)) {
-				found = append(found, d)
+			if strings.Contains(strings.ToLower(t.name), strings.ToLower(host)) {
+				found = append(found, t)
 			}
 		}
 		switch len(found) {
 		case 0:
-			return "", fmt.Errorf("no device called %q on Tailscale", host)
+			return "", fmt.Errorf("no computer called %q running Remoter answered, on the home network or on Tailscale; is Remoter running there? (its address works too)", host)
 		case 1:
 		default:
 			var names []string
-			for _, d := range found {
-				names = append(names, d.Name)
+			for _, t := range found {
+				names = append(names, t.name)
 			}
-			return "", fmt.Errorf("%q matches several devices: %s", host, strings.Join(names, ", "))
+			return "", fmt.Errorf("%q matches several computers: %s", host, strings.Join(names, ", "))
 		}
-		if !found[0].Online {
-			log.Printf("kvm: %s looks offline on Tailscale; trying anyway", found[0].Name)
+		var p string
+		if host, p, err = net.SplitHostPort(found[0].addr); err != nil {
+			return "", err
 		}
-		if ip, err = netip.ParseAddr(found[0].IP); err != nil {
-			return "", fmt.Errorf("%s has no usable address", found[0].Name)
+		if port == viewer.DefaultPort {
+			port = p
+		}
+		if ip, err = netip.ParseAddr(host); err != nil {
+			return "", fmt.Errorf("%s has no usable address", found[0].name)
 		}
 	}
-	if !tailnet.Contains(ip.Unmap()) && !ip.IsLoopback() && !insecure {
-		return "", errors.New("the merged desktop sends every keystroke, passwords included, without encryption of its own, so it only runs over Tailscale: use the computer's Tailscale name or 100.x address (or -insecure on a network you trust)")
+	ip = ip.Unmap()
+	switch {
+	case tailnet.Contains(ip) || ip.IsLoopback():
+	case lan.Local(ip):
+		log.Print("kvm: on the home network, keystrokes (passwords too) are not encrypted; anyone on this network could read them. Tailscale encrypts them.")
+	case !insecure:
+		return "", errors.New("that address is outside the home network and Tailscale, and the merged desktop sends every keystroke without encryption of its own: use Tailscale, or -insecure if you trust the network")
 	}
 	return net.JoinHostPort(ip.String(), port), nil
 }

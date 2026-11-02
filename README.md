@@ -319,10 +319,14 @@ wlroots compositor, X11, or Windows).
 - The pointer crosses only after you keep pushing against the edge for a
   moment (`-push`, 0 for at once), so a taskbar there stays easy to hit.
   It does not cross while a mouse button is held.
-- Every keystroke crosses the network, so it only runs to a Tailscale
-  name or address (WireGuard encrypts it); `-insecure` allows a home
-  network address. It uses the password the viewer saved for that
-  computer, or `-password`.
+- The other computer can be found by name on the home network or on
+  Tailscale, or given as an address. With no computer named (the
+  **Remoter merged desktop** Start menu entry), it asks the first time and
+  then remembers. It uses the password the viewer saved for that computer,
+  or `-password`.
+- Every keystroke crosses the network. Tailscale encrypts it; on the home
+  network it is not encrypted (a warning says so), and other addresses need
+  `-insecure`.
 - Ctrl+Alt+Del, the lock screen and UAC prompts always stay on Windows;
   the keyboard and mouse come back by themselves when one appears, and
   when the link drops.

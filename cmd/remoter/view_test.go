@@ -38,10 +38,13 @@ func TestKVMAddress(t *testing.T) {
 			t.Errorf("kvmAddress(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	if _, err := kvmAddress(context.Background(), "192.168.1.20", false); err == nil {
-		t.Error("a home network address was allowed without -insecure")
+	if got, err := kvmAddress(context.Background(), "192.168.1.20", false); err != nil || got != "192.168.1.20:8080" {
+		t.Errorf("home network: %q, %v", got, err)
 	}
-	if got, err := kvmAddress(context.Background(), "192.168.1.20", true); err != nil || got != "192.168.1.20:8080" {
+	if _, err := kvmAddress(context.Background(), "8.8.8.8", false); err == nil {
+		t.Error("an internet address was allowed without -insecure")
+	}
+	if got, err := kvmAddress(context.Background(), "8.8.8.8", true); err != nil || got != "8.8.8.8:8080" {
 		t.Errorf("with -insecure: %q, %v", got, err)
 	}
 }
