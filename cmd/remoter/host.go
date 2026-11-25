@@ -66,6 +66,7 @@ func newAgent(o hostOptions) *host.Agent {
 	var src capture.Source = screen
 	var in input.Handler = input.Log{}
 	var mons host.Monitors
+	var kvm host.KVMInput
 	if o.test {
 		src = capture.TestPattern{}
 	} else {
@@ -75,6 +76,13 @@ func newAgent(o hostOptions) *host.Agent {
 				log.Printf("remote control disabled: %v", err)
 			} else {
 				in = native
+			}
+			// A merged-desktop sender (remoter kvm) gets its own
+			// injector, which always spans every monitor.
+			if l, err := input.NewLayout(capture.Displays); err != nil {
+				log.Printf("merged desktop input disabled: %v", err)
+			} else {
+				kvm = l
 			}
 		}
 		region := &input.InRegion{Handler: in}
@@ -106,6 +114,7 @@ func newAgent(o hostOptions) *host.Agent {
 			}
 		},
 		Monitors: mons,
+		KVM:      kvm,
 		Diagnostics: func() string {
 			enc, _ := videoEncoder.Load().(string)
 			if enc == "" {

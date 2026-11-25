@@ -26,5 +26,6 @@ var evdevByCode = map[string]uint32{
 	"NumpadEqual": 117, "Pause": 119, "IntlYen": 124, "MetaLeft": 125, "MetaRight": 126,
 	"ContextMenu": 127, "F13": 183, "F14": 184, "F15": 185, "F16": 186, "F17": 187,
 	"F18": 188, "F19": 189, "F20": 190, "F21": 191, "F22": 192, "F23": 193, "F24": 194,
+	"KanaMode": 93, "Convert": 92, "NonConvert": 94, "NumpadComma": 121,
 	"MediaPlayPause": 164, "MediaTrackNext": 163, "MediaTrackPrevious": 165, "MediaStop": 166,
 }

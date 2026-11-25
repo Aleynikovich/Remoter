@@ -4,6 +4,7 @@ package wayland
 
 import (
 	"errors"
+	"image"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -42,6 +43,41 @@ func (c *Conn) NewLayoutPointer() (*Pointer, error) {
 	return p, c.send(c.pointers.id, 0, c.seat, p.id) // create_virtual_pointer
 }
 
+// NewLogicalPointer creates a virtual mouse for MoveLogical, which places
+// it in the compositor's layout coordinates (logical pixels, which differ
+// from a scaled monitor's mode).
+func (c *Conn) NewLogicalPointer() (*Pointer, error) {
+	if c.pointers.id == 0 {
+		return nil, errors.New("the compositor does not offer a virtual mouse (wlr-virtual-pointer)")
+	}
+	p := &Pointer{c: c, id: c.newID(nil)}
+	return p, c.send(c.pointers.id, 0, c.seat, p.id) // create_virtual_pointer
+}
+
+// LogicalLayout lists every monitor's rectangle in the compositor's layout.
+func (c *Conn) LogicalLayout() []image.Rectangle {
+	var rs []image.Rectangle
+	for _, o := range c.Outputs() {
+		rs = append(rs, o.Logical())
+	}
+	return rs
+}
+
+// MoveLogical puts a pointer from NewLogicalPointer at x, y of the layout.
+func (p *Pointer) MoveLogical(x, y int) {
+	var box image.Rectangle
+	for _, r := range p.c.LogicalLayout() {
+		box = box.Union(r)
+	}
+	if box.Empty() {
+		return
+	}
+	x = min(max(x, box.Min.X), box.Max.X-1)
+	y = min(max(y, box.Min.Y), box.Max.Y-1)
+	p.c.send(p.id, 1, now(), uint32(x-box.Min.X), uint32(y-box.Min.Y), uint32(box.Dx()), uint32(box.Dy()))
+	p.c.send(p.id, 4) // frame
+}
+
 // Close removes the mouse.
 func (p *Pointer) Close() { p.c.send(p.id, 8) }
 
@@ -76,13 +112,17 @@ func (p *Pointer) Button(button uint32, down bool) {
 }
 
 // Scroll turns the vertical wheel by notches, down positive.
-func (p *Pointer) Scroll(notches float64) {
+func (p *Pointer) Scroll(notches float64) { p.ScrollAxis(0, notches) }
+
+// ScrollAxis turns the vertical (axis 0, down positive) or horizontal
+// (axis 1, right positive) wheel by notches.
+func (p *Pointer) ScrollAxis(axis uint32, notches float64) {
 	t := now()
 	p.c.send(p.id, 5, uint32(0)) // axis_source: wheel
 	if n := int32(notches); float64(n) == notches && n != 0 {
-		p.c.send(p.id, 7, t, uint32(0), fixed(notches*15), n) // axis_discrete
+		p.c.send(p.id, 7, t, axis, fixed(notches*15), n) // axis_discrete
 	} else {
-		p.c.send(p.id, 3, t, uint32(0), fixed(notches*15)) // axis
+		p.c.send(p.id, 3, t, axis, fixed(notches*15)) // axis
 	}
 	p.c.send(p.id, 4)
 }

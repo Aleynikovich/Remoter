@@ -28,6 +28,9 @@ jobs:
       # no GPU, so the hardware test skips).
       - if: runner.os == 'Windows'
         run: go test -v -run Encoder ./internal/mf
+      # Shows whether the merged desktop's keyboard and mouse hooks install.
+      - if: runner.os == 'Windows'
+        run: go test -v -run TestHooks ./internal/kvm
       # Shows how pointer moves land and whether windows get hover events.
       - if: runner.os == 'Windows'
         run: go test -v -run 'TestPointer|TestHover' ./internal/input

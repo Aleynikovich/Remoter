@@ -19,9 +19,13 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-// Library calls and layouts follow OpenH264 2.4.1's codec_api.h. Structs are
-// kept as byte buffers written at the C offsets, which are the same on every
-// 64-bit platform.
+// Library calls and layouts follow OpenH264's codec_api.h. Structs are kept
+// as byte buffers written at the C offsets, which are the same on every
+// 64-bit platform. OpenH264 2.6.0 added PSNR fields: bools at the end of
+// SEncParamExt and SSourcePicture, which only grow those structs, and a
+// float[3] in SLayerBSInfo, which moves everything in SFrameBSInfo after
+// the first layer. Buffers are sized for the larger layout and the frame
+// info is read with the offsets of the loaded library's version.
 const (
 	usageScreenRealTime = 1 // SCREEN_CONTENT_REAL_TIME
 	rcBitrate           = 1 // RC_BITRATE_MODE
@@ -33,10 +37,9 @@ const (
 	traceQuiet          = 0
 	sliceFixed          = 1 // SM_FIXEDSLCNUM_SLICE
 
-	paramExtSize  = 920
-	sourceSize    = 72
-	frameInfoSize = 5144
-	layerInfoSize = 40
+	paramExtSize  = 924  // 920 before 2.6
+	sourceSize    = 80   // 72 before 2.6
+	frameInfoSize = 7192 // 5144 before 2.6
 	maxLayers     = 128
 
 	// ISVCEncoder vtable slots.
@@ -56,7 +59,33 @@ var (
 	destroy  uintptr // WelsDestroySVCEncoder
 
 	createDecoder, destroyDecoder uintptr // WelsCreateDecoder, WelsDestroyDecoder
+
+	version [3]uint32 // major, minor, revision of the loaded library
+	layout  infoLayout
 )
+
+// infoLayout says where SFrameBSInfo keeps its fields.
+type infoLayout struct {
+	layerSize    int // sizeof(SLayerBSInfo)
+	frameTypeOff int // offsetof(SFrameBSInfo, eFrameType)
+}
+
+// layoutFor returns the SFrameBSInfo layout of an OpenH264 version.
+func layoutFor(major, minor uint32) infoLayout {
+	if major > 2 || major == 2 && minor >= 6 {
+		return infoLayout{layerSize: 56, frameTypeOff: 8 + 56*maxLayers}
+	}
+	return infoLayout{layerSize: 40, frameTypeOff: 8 + 40*maxLayers}
+}
+
+// Version returns the loaded library's version, such as "2.4.1", or ""
+// when it is not loaded or does not say.
+func Version() string {
+	if !ready.Load() || version[0] == 0 && version[1] == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d.%d.%d", version[0], version[1], version[2])
+}
 
 // Load loads the OpenH264 library. It is safe to call more than once; later
 // calls return the first result.
@@ -80,6 +109,14 @@ func Load() error {
 		// The decoder is optional; only the desktop viewer uses it.
 		createDecoder, _ = sym("WelsCreateDecoder")
 		destroyDecoder, _ = sym("WelsDestroyDecoder")
+		// WelsGetCodecVersionEx has been there since 1.x; without it,
+		// assume the old layout.
+		if fn, err := sym("WelsGetCodecVersionEx"); err == nil && fn != 0 {
+			var v [4]uint32 // OpenH264Version
+			purego.SyscallN(fn, uintptr(unsafe.Pointer(&v[0])))
+			copy(version[:], v[:3])
+		}
+		layout = layoutFor(version[0], version[1])
 		ready.Store(true)
 	})
 	return loadErr
@@ -202,14 +239,24 @@ func (e *Encoder) Encode(img *image.RGBA, key bool) (data []byte, isKey bool, er
 		return nil, false, fmt.Errorf("h264: EncodeFrame failed (%d)", r)
 	}
 	runtime.KeepAlive(e.yuv)
-	le := binary.LittleEndian
-	typ := le.Uint32(e.info[5128:])
+	data, typ := frameData(e.info, layout)
 	if typ == frameSkip {
 		return nil, false, nil
 	}
-	layers := int(le.Uint32(e.info[0:]))
+	return data, typ == frameIDR, nil
+}
+
+// frameData copies the bitstream out of an SFrameBSInfo and
+// returns it with the frame type. lay is the library's layout.
+func frameData(info []byte, lay infoLayout) (data []byte, typ uint32) {
+	le := binary.LittleEndian
+	typ = le.Uint32(info[lay.frameTypeOff:])
+	if typ == frameSkip {
+		return nil, typ
+	}
+	layers := int(le.Uint32(info[0:]))
 	for i := range min(layers, maxLayers) {
-		l := e.info[8+i*layerInfoSize:]
+		l := info[8+i*lay.layerSize:]
 		nals := int(le.Uint32(l[16:]))
 		lens := *(*unsafe.Pointer)(unsafe.Pointer(&l[24]))
 		buf := *(*unsafe.Pointer)(unsafe.Pointer(&l[32]))
@@ -222,7 +269,7 @@ func (e *Encoder) Encode(img *image.RGBA, key bool) (data []byte, isKey bool, er
 		}
 		data = append(data, unsafe.Slice((*byte)(buf), size)...)
 	}
-	return data, typ == frameIDR, nil
+	return data, typ
 }
 
 // Close frees the encoder.
@@ -298,9 +345,35 @@ func SelfTest() error {
 		if err != nil {
 			return err
 		}
-		if i == 0 && (!key || len(data) < 4 || data[0] != 0 || data[1] != 0) {
-			return errors.New("h264: first frame is not an Annex B key frame")
+		if i == 0 {
+			if err := checkKeyFrame(data, key); err != nil {
+				if v := Version(); v != "" {
+					err = fmt.Errorf("%w (OpenH264 %s)", err, v)
+				}
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// checkKeyFrame checks that data is an Annex B stream, with 3- or 4-byte
+// start codes, that holds an IDR slice, and that the encoder called it a
+// key frame.
+func checkKeyFrame(data []byte, key bool) error {
+	switch {
+	case len(data) < 4 || data[0] != 0 || data[1] != 0 || !(data[2] == 1 || data[2] == 0 && data[3] == 1):
+		return errors.New("h264: first frame is not Annex B")
+	case !key:
+		return errors.New("h264: first frame is not marked as a key frame")
+	}
+	for i := 0; i+3 < len(data); i++ {
+		if data[i] == 0 && data[i+1] == 0 && data[i+2] == 1 {
+			if data[i+3]&0x1f == 5 {
+				return nil
+			}
+			i += 2
+		}
+	}
+	return errors.New("h264: first frame has no IDR slice")
 }

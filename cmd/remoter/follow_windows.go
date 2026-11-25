@@ -19,7 +19,7 @@ import (
 // input get separate threads so a slow capture never delays a keystroke.
 func followInputDesktop(src capture.Source, in host.InputHandler) (capture.Source, host.InputHandler) {
 	return followCapture{src: src, w: wdesktop.NewWorker("capture")},
-		followInput{h: in, w: wdesktop.NewWorker("input")}
+		&followInput{h: in, w: wdesktop.NewWorker("input")}
 }
 
 type followCapture struct {
@@ -35,17 +35,22 @@ func (f followCapture) Capture() (image.Image, error) {
 }
 
 type followInput struct {
-	h host.InputHandler
-	w *wdesktop.Worker
+	h     host.InputHandler
+	w     *wdesktop.Worker
+	guard signinGuard // only touched on the worker thread
 }
 
-func (f followInput) HandleInput(viewer string, in protocol.Input) {
-	f.w.Do(func() { f.h.HandleInput(viewer, in) })
+func (f *followInput) HandleInput(viewer string, in protocol.Input) {
+	f.w.Do(func() {
+		if f.guard.allow(f.w.Desktop(), in) {
+			f.h.HandleInput(viewer, in)
+		}
+	})
 }
 
 // ReleaseAll forwards to the wrapped handler on the input thread, so the
 // host's releaser check keeps working through the wrapper.
-func (f followInput) ReleaseAll(viewer string) {
+func (f *followInput) ReleaseAll(viewer string) {
 	if r, ok := f.h.(interface{ ReleaseAll(string) }); ok {
 		f.w.Do(func() { r.ReleaseAll(viewer) })
 	}

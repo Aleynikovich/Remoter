@@ -18,6 +18,7 @@ func TestRoleOf(t *testing.T) {
 		{[]string{"remoter.new.exe", "-version"}, roleOther},
 		{[]string{"remoter.exe", "-stop"}, roleOther},
 		{[]string{"remoter.exe", "send", "file.txt"}, roleOther},
+		{[]string{"remoter.exe", "kvm", "-side", "bottom", "SR00047L"}, roleOther},
 		{[]string{"remoter.exe", "-setup"}, roleOther},
 	} {
 		if got := roleOf(c.argv); got != c.want {

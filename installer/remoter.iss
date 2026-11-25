@@ -43,6 +43,9 @@ WizardStyle=modern
 ; place, so the computer is unreachable for as short a time as possible.
 CloseApplications=no
 RestartApplications=no
+; The install folder goes on the PATH, so "remoter kvm" and "remoter send"
+; work in any terminal.
+ChangesEnvironment=yes
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut"
@@ -54,6 +57,9 @@ Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "remoter.exe"; Flags: ignore
 ; Straight in the Start menu, not in a folder, so it is easy to find.
 Name: "{autoprograms}\Remoter"; Filename: "{app}\remoter.exe"
 Name: "{autodesktop}\Remoter"; Filename: "{app}\remoter.exe"; Tasks: desktopicon
+; The merged desktop: this keyboard and mouse also on another computer. It
+; asks which computer the first time, then remembers.
+Name: "{autoprograms}\Remoter merged desktop"; Filename: "{app}\remoter.exe"; Parameters: "kvm"; Comment: "Use this keyboard and mouse on another computer running Remoter"
 
 [InstallDelete]
 ; dev-57 put the shortcut in a Remoter folder.
@@ -62,6 +68,7 @@ Type: filesandordirs; Name: "{autoprograms}\Remoter"
 [Registry]
 ; Tells copies downloaded elsewhere to hand over to this one.
 Root: HKLM; Subkey: "Software\Remoter"; ValueType: string; ValueName: "Path"; ValueData: "{app}\remoter.exe"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Run]
 Filename: "{app}\remoter.exe"; Parameters: "-setup"; StatusMsg: "Starting Remoter..."; Flags: runhidden waituntilterminated
@@ -75,6 +82,45 @@ Filename: "{app}\remoter.exe"; Parameters: "-unsetup"; RunOnceId: "RemoterUnsetu
 Type: files; Name: "{app}\remoter.*.exe"
 
 [Code]
+const
+  EnvKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+
+// NeedsAddPath reports whether dir is not on the system PATH yet.
+function NeedsAddPath(Dir: String): Boolean;
+var
+  Path: String;
+begin
+  if not RegQueryStringValue(HKLM, EnvKey, 'Path', Path) then
+  begin
+    Result := True;
+    exit;
+  end;
+  Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Path) + ';') = 0;
+end;
+
+// Take the install folder off the PATH again on uninstall.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Path, Dir: String;
+  P: Integer;
+begin
+  if CurUninstallStep <> usPostUninstall then
+    exit;
+  if not RegQueryStringValue(HKLM, EnvKey, 'Path', Path) then
+    exit;
+  Dir := ExpandConstant('{app}');
+  P := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Path) + ';');
+  if P = 0 then
+    exit;
+  // P is where ";Dir;" starts in ";Path;": in Path that is the ";" before
+  // Dir, or Dir itself when it comes first.
+  if P = 1 then
+    Delete(Path, 1, Length(Dir) + 1)
+  else
+    Delete(Path, P - 1, Length(Dir) + 1);
+  RegWriteExpandStringValue(HKLM, EnvKey, 'Path', Path);
+end;
+
 // Windows lets a running program's file be renamed but not overwritten, and
 // the boot service runs from {app}\remoter.exe. Move it aside so the new one
 // can be copied in without stopping anything yet; Remoter deletes the
