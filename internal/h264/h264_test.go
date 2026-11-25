@@ -2,7 +2,10 @@ package h264
 
 import (
 	"bytes"
+	"encoding/binary"
 	"image"
+	"os"
+	"runtime"
 	"testing"
 	"time"
 	"unsafe"
@@ -126,5 +129,114 @@ func TestDecodeRoundTrip(t *testing.T) {
 		if diff := int(got) - int(want); diff < -24 || diff > 24 {
 			t.Errorf("frame %d: luma %d, want about %d", i, got, want)
 		}
+	}
+}
+
+// TestRecordFirstFrame writes the first encoded frame to the file named by
+// $H264_RECORD, to refresh testdata from a given OpenH264 version.
+func TestRecordFirstFrame(t *testing.T) {
+	path := os.Getenv("H264_RECORD")
+	if path == "" {
+		t.Skip("set H264_RECORD to record a first frame")
+	}
+	if err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	e, err := NewEncoder(320, 240, 500, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	data, key, err := e.Encode(pattern(320, 240, 0), true)
+	if err != nil || !key {
+		t.Fatalf("key=%v err=%v", key, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("OpenH264 %s: %d bytes, NAL types %v", Version(), len(data), nalTypes(data))
+}
+
+func TestSelfTest(t *testing.T) {
+	if err := Load(); err != nil {
+		t.Skip(err)
+	}
+	if err := SelfTest(); err != nil {
+		t.Fatalf("OpenH264 %s: %v", Version(), err)
+	}
+}
+
+// fakeFrameInfo builds an SFrameBSInfo in the given layout holding one
+// layer with the NAL units nals, as OpenH264 would fill it in.
+func fakeFrameInfo(lay infoLayout, typ uint32, nals [][]byte) (info []byte, keep any) {
+	info = make([]byte, frameInfoSize)
+	le := binary.LittleEndian
+	le.PutUint32(info[0:], 1) // iLayerNum
+	var buf []byte
+	lens := make([]int32, len(nals))
+	for i, n := range nals {
+		buf = append(buf, n...)
+		lens[i] = int32(len(n))
+	}
+	l := info[8:]
+	le.PutUint32(l[16:], uint32(len(nals)))
+	*(*unsafe.Pointer)(unsafe.Pointer(&l[24])) = unsafe.Pointer(&lens[0])
+	*(*unsafe.Pointer)(unsafe.Pointer(&l[32])) = unsafe.Pointer(&buf[0])
+	// Junk where the other layout keeps the frame type, so reading the
+	// wrong offset shows.
+	le.PutUint32(info[8+40*maxLayers:], 0xdead)
+	le.PutUint32(info[8+56*maxLayers:], 0xdead)
+	le.PutUint32(info[lay.frameTypeOff:], typ)
+	return info, []any{lens, buf}
+}
+
+func TestFrameDataLayouts(t *testing.T) {
+	first, err := os.ReadFile("testdata/openh264-2.7.0-first-frame.h264")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []struct{ major, minor uint32 }{{1, 8}, {2, 4}, {2, 5}, {2, 6}, {2, 7}, {3, 0}} {
+		lay := layoutFor(v.major, v.minor)
+		info, keep := fakeFrameInfo(lay, frameIDR, [][]byte{first[:len(first)/2], first[len(first)/2:]})
+		data, typ := frameData(info, lay)
+		runtime.KeepAlive(keep)
+		if typ != frameIDR || !bytes.Equal(data, first) {
+			t.Errorf("%d.%d: type %d, %d bytes; want IDR and the %d recorded bytes", v.major, v.minor, typ, len(data), len(first))
+		}
+		if err := checkKeyFrame(data, typ == frameIDR); err != nil {
+			t.Errorf("%d.%d: %v", v.major, v.minor, err)
+		}
+	}
+	if l := layoutFor(2, 7); l.layerSize != 56 || l.frameTypeOff != 7176 {
+		t.Errorf("2.7 layout %+v, want 56-byte layers and the frame type at 7176", l)
+	}
+	if l := layoutFor(2, 4); l.layerSize != 40 || l.frameTypeOff != 5128 {
+		t.Errorf("2.4 layout %+v, want 40-byte layers and the frame type at 5128", l)
+	}
+}
+
+func TestCheckKeyFrame(t *testing.T) {
+	first, err := os.ReadFile("testdata/openh264-2.7.0-first-frame.h264")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkKeyFrame(first, true); err != nil {
+		t.Errorf("recorded 2.7 frame: %v", err)
+	}
+	if types := nalTypes(first); !bytes.Contains(types, []byte{7}) || !bytes.Contains(types, []byte{8}) || !bytes.Contains(types, []byte{5}) {
+		t.Errorf("recorded 2.7 frame NAL types %v, want SPS, PPS and IDR", types)
+	}
+	short := []byte{0, 0, 1, 0x67, 0x42, 0, 0, 1, 0x68, 0xce, 0, 0, 1, 0x65, 0x88}
+	if err := checkKeyFrame(short, true); err != nil {
+		t.Errorf("3-byte start codes: %v", err)
+	}
+	if checkKeyFrame(first, false) == nil {
+		t.Error("frame not marked as key passed")
+	}
+	if checkKeyFrame([]byte{0, 0, 0, 1, 0x41, 0x9a}, true) == nil {
+		t.Error("P slice passed as a key frame")
+	}
+	if checkKeyFrame(first[4:], true) == nil {
+		t.Error("stream without a start code passed")
 	}
 }
